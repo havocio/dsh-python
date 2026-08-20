@@ -219,12 +219,31 @@ def _topo_sort(entries: list[tuple]) -> list[tuple]:
 
 
 def _load_rows(ctx: AppContext, rows: list[dict]) -> list:
-    """按拓扑顺序加载规范化行；返回可卸载句柄列表。"""
+    """按拓扑顺序加载规范化行；延迟就绪机制保证跨插件顺序无关；返回句柄列表。"""
     handles = []
     for apply_fn, config, _inject, _provides in _topo_sort(_collect_entries(rows)):
-        handle = ctx.plugin(apply_fn, config, name=getattr(apply_fn, "__name__", None))
+        # lazy=True：依赖缺失时挂起，待后续插件 provide 后自动唤醒（延迟就绪）
+        handle = ctx.plugin(apply_fn, config, name=getattr(apply_fn, "__name__", None), lazy=True)
         handles.append(handle)
+    # 加载结束仍有挂起 = 依赖始终缺失 / 循环依赖 → 报错并清空
+    ctx.finalize_pending()
     return handles
+
+
+def _provide_builtins(ctx: AppContext) -> None:
+    """内核内置服务（对标 cordis 的 logger/reflect/registry），随装配自动提供。
+
+    仅当尚未提供时提供（幂等），不依赖 profile、与 ``events`` 同属内核设施。
+    """
+    if not ctx.has_service("logger"):
+        from dsh_py.core.logger import LoggerService
+        LoggerService(ctx)
+    if not ctx.has_service("reflect"):
+        from dsh_py.core.reflect import ReflectService
+        ReflectService(ctx)
+    if not ctx.has_service("registry"):
+        from dsh_py.core.registry import RegistryService
+        RegistryService(ctx)
 
 
 def load_profile(ctx: AppContext, profile: list[ProfileEntry]) -> list:
@@ -252,6 +271,7 @@ def boot(
     - 按 ``inject``/``provides`` 依赖拓扑排序后加载。
     :returns: 全部已加载插件的可卸载句柄列表。
     """
+    _provide_builtins(ctx)
     rows = compose_entries(*layers)
     for row in rows:
         if row.get("config") is not None:
@@ -277,4 +297,5 @@ def bootstrap(ctx: AppContext) -> None:
     条目按序加载。想替换任意一部分时，改用你自己的 profile 调用
     :func:`load_profile` 或 :func:`boot` 即可，无需触碰框架代码。
     """
+    _provide_builtins(ctx)
     load_profile(ctx, CORE_PROFILE)

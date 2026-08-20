@@ -136,6 +136,12 @@ class LlmService(Service):
         self._provider_retry: dict[str, ResolvedRetryPolicy] = {}
         # 每个供应商路由的默认调用配置（call-config 最低层，可选）
         self._provider_defaults: dict[str, dict] = {}
+        # 每个 adapter 实例当前持有的路由（topology 通知 / dispose 释放用）
+        self._owned: dict[int, set[str]] = {}
+        # configurable-provider 目录（可配置提供方声明，topology 通知用）
+        self._configurable: dict[str, dict] = {}
+        # 模型发现处理（按 settings 命名空间注册；配置面"获取可用模型"动作）
+        self._model_discovery: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # 注册
@@ -147,28 +153,188 @@ class LlmService(Service):
         replace: bool = False,
         retry: Optional[ResolvedRetryPolicy] = None,
         defaults: Optional[dict] = None,
-    ) -> None:
+    ) -> Any:
         """为一组供应商路由注册同一适配器（要么全部成功，要么整体失败）。
 
         - ``replace=True`` 允许覆盖已存在的映射（例如 CLI 的 ``--mock``）；
         - ``retry`` 是该路由的重试策略（缺省不重试）；
         - ``defaults`` 是该路由的默认调用配置（call-config 最低层，如默认 model）。
+
+        返回注册句柄（对标 dsh 的 ``AdapterRegistrationHandle``）：可调用以释放
+        本次注册的全部路由，``handle.replace(next_providers)`` 原子替换路由集。
+        每次提交（首次注册 / 替换 / 释放）都会广播 ``llm/adapters-updated``
+        拓扑通知（contained，监听器失败不阻断提交）。
         """
         for provider in providers:
             if not provider:
                 raise ValueError("适配器供应商名称不能为空")
             if provider in self._adapters and not replace:
                 raise RuntimeError(f"供应商 {provider!r} 已有适配器注册")
+        # replace=True 覆盖他人路由时，从原 owner 的 owned 记录中移除
+        for provider in providers:
+            for owner_id, owned in list(self._owned.items()):
+                if provider in owned and self._adapters.get(provider) is not adapter:
+                    owned.discard(provider)
+        owned: set[str] = set()
         for provider in providers:
             self._adapters[provider] = adapter
+            self._owned.setdefault(id(adapter), set()).add(provider)
+            owned.add(provider)
             if retry is not None:
                 self._provider_retry[provider] = retry
             if defaults is not None:
                 self._provider_defaults[provider] = defaults
+        self._emit_adapters_updated()
+
+        def dispose() -> None:
+            """释放本次注册当前持有的全部路由（幂等）。"""
+            if not owned:
+                return
+            for provider in list(owned):
+                self._adapters.pop(provider, None)
+                self._provider_retry.pop(provider, None)
+                self._provider_defaults.pop(provider, None)
+                self._owned.get(id(adapter), set()).discard(provider)
+                owned.discard(provider)
+            self._emit_adapters_updated()
+
+        def replace_routes(next_providers: list[str]) -> None:
+            """原子替换本次注册的路由集（保留同一 adapter 实例）。"""
+            for provider in next_providers:
+                if not provider:
+                    raise ValueError("适配器供应商名称不能为空")
+                if provider in self._adapters and provider not in owned:
+                    raise RuntimeError(f"供应商 {provider!r} 已有适配器注册")
+            for provider in list(owned):
+                self._adapters.pop(provider, None)
+                self._provider_retry.pop(provider, None)
+                self._provider_defaults.pop(provider, None)
+                self._owned.get(id(adapter), set()).discard(provider)
+                owned.discard(provider)
+            for provider in next_providers:
+                self._adapters[provider] = adapter
+                self._owned.setdefault(id(adapter), set()).add(provider)
+                owned.add(provider)
+            self._emit_adapters_updated()
+
+        handle = dispose
+        handle.replace = replace_routes  # type: ignore[attr-defined]
+        return handle  # type: ignore[return-value]
+
+    def _emit_adapters_updated(self) -> None:
+        """通知拓扑观察者：适配器注册 / 替换 / 释放已提交（contained 非否决）。"""
+        self.ctx.events.dispatch("llm/adapters-updated")
+
+    def register_configurable_providers(self, entries: list[dict]) -> Any:
+        """声明插件可通过配置激活的提供方路由（可配置提供方目录）。
+
+        全有或全无：空列表、非法条目或已被任何注册声明过的提供方都会抛错且
+        不注册其余。返回句柄：调用释放全部条目，``handle.replace(next)`` 原子替换。
+
+        :param entries: 每项须含非空 ``provider`` / ``displayName`` / ``settingsNs``
+            （``settingsPath`` 为段列表，可选）。
+        """
+        held: set[str] = set()
+
+        def commit(candidates: list[dict]) -> None:
+            detached: list[dict] = []
+            for entry in candidates:
+                if not entry.get("provider") or not entry.get("displayName") or not entry.get("settingsNs"):
+                    raise RuntimeError("可配置提供方需要非空的 provider / displayName / settingsNs")
+                if entry.get("provider") in self._configurable and entry["provider"] not in held:
+                    raise RuntimeError(f"可配置提供方 {entry['provider']!r} 已被声明")
+                detached.append(dict(entry))
+            for provider in held:
+                self._configurable.pop(provider, None)
+            for entry in detached:
+                self._configurable[entry["provider"]] = entry
+                held.add(entry["provider"])
+            self._emit_adapters_updated()
+
+        if not entries:
+            raise RuntimeError("可配置提供方注册必须至少声明一个提供方")
+        commit(entries)
+
+        def dispose() -> None:
+            if not held:
+                return
+            for provider in list(held):
+                self._configurable.pop(provider, None)
+                held.discard(provider)
+            self._emit_adapters_updated()
+
+        def replace_entries(next_entries: list[dict]) -> None:
+            if next_entries:
+                commit(next_entries)
+            else:
+                dispose()
+
+        handle = dispose
+        handle.replace = replace_entries  # type: ignore[attr-defined]
+        return handle  # type: ignore[return-value]
+
+    def list_configurable_providers(self) -> list[dict]:
+        """列出全部已声明的可配置提供方（注册或休眠态），按声明顺序。"""
+        return [dict(entry) for entry in self._configurable.values()]
+
+    def register_model_discovery(self, namespace: Any, handler: Any) -> Any:
+        """注册一个模型发现处理（按命名空间，一个命名空间一个）。
+
+        处理 ``handler(request, stored_api_key=None)`` 返回该路由可服务的模型
+        清单（目录路由无网络开销、网关路由探测端点）。返回句柄：调用释放，
+        ``handle.replace(next_handler)`` 原子替换。
+        """
+        key = namespace.value if hasattr(namespace, "value") else str(namespace)
+        if key in self._model_discovery:
+            raise RuntimeError(f"模型发现处理 {key!r} 已被注册")
+
+        def dispose() -> None:
+            self._model_discovery.pop(key, None)
+
+        def replace_handler(next_handler: Any) -> None:
+            self._model_discovery[key] = next_handler
+
+        handle = dispose
+        handle.replace = replace_handler  # type: ignore[attr-defined]
+        self._model_discovery[key] = handler
+        return handle  # type: ignore[return-value]
+
+    def model_discovery_handler(self, namespace: Any) -> Optional[Any]:
+        """取一个命名空间的模型发现处理（未注册返回 None）。"""
+        key = namespace.value if hasattr(namespace, "value") else str(namespace)
+        return self._model_discovery.get(key)
+
+    async def discover_models(self, namespace: Any, request: dict) -> list[dict]:
+        """经已注册的模型发现处理查询模型清单。
+
+        :raises RuntimeError: 该命名空间未注册模型发现。
+        """
+        handler = self.model_discovery_handler(namespace)
+        if handler is None:
+            raise RuntimeError(f"模型发现处理 {namespace!r} 未注册")
+        result = handler(request)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
 
     def list_providers(self) -> list[LlmProviderInfo]:
         """列出当前所有已注册的供应商。"""
         return [self._adapters[p].provider_info(p) for p in self._adapters]
+
+    async def resolve_model_info(self, provider: str, model: str, signal: Any = None) -> dict:
+        """解析并校验一个确切模型的完整元信息（对齐 dsh 的 ``resolveModelInfo``）。
+
+        adapter 可在返回字典中携带 ``context: {"context_window": N}``（供
+        compaction 压力预算）与 ``reasoning`` 等能力元信息；本方法校验返回的
+        id 必须等于请求的 model。
+        """
+        adapter = self._adapter(provider)
+        info = await adapter.resolve_model(provider, model)
+        if not isinstance(info, dict):
+            raise RuntimeError(f"adapter 返回了无效的模型元信息（期望 dict，得到 {type(info).__name__}）")
+        if info.get("id") != model:
+            raise RuntimeError(f"adapter 返回了不一致的模型 id {info.get('id')!r}（期望 {model!r}）")
+        return info
 
     def _adapter(self, provider: str) -> LlmAdapter:
         """按供应商名取出适配器，不存在则抛错。"""

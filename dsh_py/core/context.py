@@ -29,18 +29,35 @@ from dsh_py.core.service import Service
 PluginFn = Callable[..., Any]
 
 
+class _PendingPlugin:
+    """延迟就绪插件的中转记录：依赖齐备前挂起，``provide`` 时唤醒执行。"""
+
+    __slots__ = ("apply_fn", "config", "name", "deps", "fiber")
+
+    def __init__(self, apply_fn, config, name, deps, fiber) -> None:
+        self.apply_fn = apply_fn
+        self.config = config
+        self.name = name
+        self.deps = deps
+        self.fiber = fiber
+
+
 class PluginHandle:
     """``ctx.plugin()`` 返回的可卸载句柄（对标 cordis 的 Fiber）。
 
     :attr fiber: 该插件的生命周期节点。
-    :meth dispose: 卸载插件，逆序回收其注册的全部资源。
+    :meth dispose: 卸载插件，逆序回收其注册的全部资源；若插件仍处
+        挂起（依赖未就绪）状态，会先从延迟队列中移除。
     """
 
-    def __init__(self, fiber: Fiber) -> None:
+    def __init__(self, fiber: Fiber, ctx: Optional["AppContext"] = None) -> None:
         self.fiber = fiber
+        self._ctx = ctx
 
     def dispose(self) -> None:
         """卸载该插件（幂等）。"""
+        if self._ctx is not None:
+            self._ctx._cancel_pending(self.fiber)
         self.fiber.dispose()
 
 
@@ -69,6 +86,8 @@ class AppContext:
         # 「当前激活 fiber」栈：ctx.plugin 加载期间压入子 fiber，
         # 使 ctx.on / ctx.provide / ctx.effect 记录到正确的生命周期节点
         self._fiber_stack: list[Fiber] = [self._fiber]
+        # 延迟就绪（lazy inject）：依赖缺失时挂起的插件队列
+        self._pending_plugins: list["_PendingPlugin"] = []
 
     # ------------------------------------------------------------------ #
     # 生命周期（Fiber）
@@ -136,6 +155,7 @@ class AppContext:
                 del self._services[name]
 
         self.fiber.effect(_unprovide, label=f"provide({name})")
+        self._drain_pending()
 
     def has_service(self, name: str) -> bool:
         """判断某个命名服务在当前作用域树内是否可解析。"""
@@ -225,6 +245,7 @@ class AppContext:
         *,
         name: Optional[str] = None,
         inject: Optional[list[str]] = None,
+        lazy: bool = False,
     ) -> PluginHandle:
         """加载一个插件：schema 校验配置 → 校验 inject 依赖 → 调用 ``apply``。
 
@@ -234,7 +255,13 @@ class AppContext:
         - ``inject`` 未显式传入时，读取 ``apply_fn.inject`` 属性；
         - 为插件创建子 :class:`Fiber`（插件期间注册的资源记录其上）；
         - 返回 :class:`PluginHandle`，可随时 ``dispose()`` 卸载插件并回收资源。
-        依赖缺失会在插件主体执行前就抛错。
+
+        依赖处理（完整 inject DI）：
+        - 所有 ``inject`` 依赖已就绪 → 立即执行（默认与历史行为一致）；
+        - ``lazy=True`` 且依赖缺失 → **延迟就绪**：挂起插件，待缺失依赖被
+          :meth:`provide` 后自动唤醒执行（支持跨插件顺序无关加载）；
+        - ``lazy=False``（默认）且依赖缺失 → 立即抛 ``RuntimeError``
+          （向后兼容「缺失即报错」语义，便于显式装配时快速失败）。
         """
         # 配置 schema 校验（对标 schemastery）
         schema = getattr(apply_fn, "Config", None)
@@ -242,16 +269,18 @@ class AppContext:
             config = schema.validate(config)
 
         deps = list(inject if inject is not None else getattr(apply_fn, "inject", None) or [])
-        missing = [dep for dep in deps if not self.has_service(dep)]
-        if missing:
-            label = name or getattr(apply_fn, "__name__", "plugin")
-            raise RuntimeError(
-                f"插件 {label!r} 依赖了尚未可用的服务：{missing}"
-            )
-        fiber = Fiber(
-            parent=self._fiber_stack[-1],
-            name=name or getattr(apply_fn, "__name__", "plugin"),
-        )
+        label = name or getattr(apply_fn, "__name__", "plugin")
+
+        if deps and not all(self.has_service(d) for d in deps):
+            if not lazy:
+                missing = [d for d in deps if not self.has_service(d)]
+                raise RuntimeError(f"插件 {label!r} 依赖了尚未可用的服务：{missing}")
+            # 延迟就绪：挂起，待依赖 provide 后由 _drain_pending 唤醒
+            fiber = Fiber(parent=self._fiber_stack[-1], name=label)
+            self._pending_plugins.append(_PendingPlugin(apply_fn, config, label, deps, fiber))
+            return PluginHandle(fiber, ctx=self)
+
+        fiber = Fiber(parent=self._fiber_stack[-1], name=label)
         fiber.start()
         self._fiber_stack.append(fiber)
         try:
@@ -259,3 +288,49 @@ class AppContext:
         finally:
             self._fiber_stack.pop()
         return PluginHandle(fiber)
+
+    # ------------------------------------------------------------------ #
+    # 延迟就绪（lazy inject）：依赖缺失时挂起，provide 时唤醒
+    # ------------------------------------------------------------------ #
+    def _drain_pending(self) -> None:
+        """执行所有依赖现已就绪的挂起插件；循环至无新就绪者（兼容依赖链触发）。"""
+        while self._pending_plugins:
+            ready = [
+                p for p in self._pending_plugins
+                if all(self.has_service(d) for d in p.deps)
+            ]
+            if not ready:
+                break
+            for p in ready:
+                self._pending_plugins.remove(p)
+                self._execute_pending(p)
+
+    def _execute_pending(self, plug: "_PendingPlugin") -> None:
+        """真正执行一个挂起插件（fiber 启动 + 压栈 + apply + 出栈）。"""
+        plug.fiber.start()
+        self._fiber_stack.append(plug.fiber)
+        try:
+            plug.apply_fn(self, plug.config)
+        finally:
+            self._fiber_stack.pop()
+
+    def _cancel_pending(self, fiber: Fiber) -> None:
+        """插件句柄 dispose 时若仍在挂起，从延迟队列移除。"""
+        for i, p in enumerate(self._pending_plugins):
+            if p.fiber is fiber:
+                self._pending_plugins.pop(i)
+                return
+
+    def finalize_pending(self) -> None:
+        """加载期结束调用：仍有挂起 = 依赖始终缺失或循环依赖，报错并清空队列。"""
+        if self._pending_plugins:
+            names = [p.name for p in self._pending_plugins]
+            missing = set()
+            for p in self._pending_plugins:
+                for d in p.deps:
+                    if not self.has_service(d):
+                        missing.add(d)
+            self._pending_plugins.clear()
+            raise RuntimeError(
+                f"插件 {names} 的依赖始终未就绪（缺失/循环依赖）：{sorted(missing)}"
+            )

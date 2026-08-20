@@ -396,9 +396,21 @@ def apply(ctx: Any, config: Optional[dict] = None) -> None:
     async def resolve_api_key(provider: str) -> str:
         for p in providers:
             if p.provider == provider:
+                # 1. 统一配置文件优先：llm.api_keys.<provider>，再兜底 llm.api_key
+                if ctx.has_service("appConfig"):
+                    per_provider = ctx.appConfig.get("llm.api_keys")
+                    if isinstance(per_provider, dict) and per_provider.get(provider):
+                        return per_provider[provider]
+                    fallback = ctx.appConfig.get("llm.api_key")
+                    if fallback:
+                        return fallback
                 key = os.environ.get(p.api_key_env) if p.api_key_env else None
                 if not key and not p.allow_empty_key:
-                    raise LlmError(f"缺少 API Key 环境变量 {p.api_key_env!r}", "MISSING_CREDENTIAL")
+                    raise LlmError(
+                        f"缺少 API Key：请在配置文件的 llm.api_keys.{provider} 或环境变量 "
+                        f"{p.api_key_env!r} 中提供",
+                        "MISSING_CREDENTIAL",
+                    )
                 return key or ""
         raise LlmError(f"未配置供应商 {provider!r}", "NO_ADAPTER")
 

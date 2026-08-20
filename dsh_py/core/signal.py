@@ -71,3 +71,26 @@ class CancelSignal:
             return False
 
         return remove
+
+    # -- 融合 ---------------------------------------------------------------- #
+    @staticmethod
+    def any(signals: list["CancelSignal"]) -> "CancelSignal":
+        """融合多个信号：任一元信号取消即取消（对齐 ``AbortSignal.any``）。
+
+        已取消的元信号立即传导；后续任一源取消也传导（幂等）。用于 agent 的
+        三源取消融合：调用方 cancel / 生命周期 fiber 卸载 / 工厂 teardown。
+        融合信号与元信号同生命周期，无需单独清理。
+        """
+        fused = CancelSignal()
+
+        def relay(sig: "CancelSignal") -> None:
+            fused.abort(sig.reason)
+
+        for sig in signals:
+            if sig is None:
+                continue
+            if sig.aborted:
+                fused.abort(sig.reason)
+                break
+            sig.add_listener(lambda s=sig: relay(s))
+        return fused

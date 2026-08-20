@@ -167,11 +167,21 @@ class StreamableHttpTransport(Transport):
         self._headers = dict(headers or {})
         self._session_id: Optional[str] = None
         self._notify_task: Optional[asyncio.Task] = None
+        self._on_message: Optional[Callable[[dict], None]] = None
+        self._notify_started = False
         self._closed = False
 
     async def start(self, on_message: Callable[[dict], None]) -> None:
-        # 后台 GET 长连接接收 server → client 通知（tools/list_changed 等）
-        self._notify_task = asyncio.create_task(self._notification_loop(on_message))
+        # 仅记录回调；GET 通知流必须等 initialize 拿到 mcp-session-id 后才建立
+        # （streamable-http 规范要求 GET 携带 session id，dsh 同此顺序）
+        self._on_message = on_message
+
+    def _ensure_notifications(self) -> None:
+        """首次确定 session id 后启动 GET 通知流（幂等，仅启动一次）。"""
+        if self._notify_started or self._on_message is None or self._session_id is None:
+            return
+        self._notify_started = True
+        self._notify_task = asyncio.create_task(self._notification_loop(self._on_message))
 
     async def _notification_loop(self, on_message: Callable[[dict], None]) -> None:
         while not self._closed:
@@ -225,6 +235,8 @@ class StreamableHttpTransport(Transport):
                         raise McpError(
                             f"MCP POST 失败（HTTP {resp.status_code}）：{body!r}")
                     self._session_id = resp.headers.get("mcp-session-id") or self._session_id
+                    # 拿到 session id 后即可建立 GET 通知流（此时连接已握手）
+                    self._ensure_notifications()
                     content_type = resp.headers.get("content-type", "")
                     if "text/event-stream" in content_type:
                         # SSE 响应：取第一个 message 事件作为本次请求的响应
@@ -243,6 +255,10 @@ class StreamableHttpTransport(Transport):
                             return
                         raise McpError("MCP SSE 响应在 message 事件前结束")
                     body = await resp.aread()
+                    # 通知类响应（202 Accepted / 空 body）无需解析 JSON：
+                    # 通知本无 id，即便解析也无处匹配；空 body 解析会误报。
+                    if not body or resp.status_code == 202:
+                        return
                     try:
                         result = json.loads(body)
                     except json.JSONDecodeError as exc:

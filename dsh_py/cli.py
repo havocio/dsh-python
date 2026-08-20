@@ -19,9 +19,11 @@ import argparse
 import asyncio
 import importlib.util
 import os
+import sys
 from typing import Any
 
 from dsh_py.core.context import AppContext
+from dsh_py.config import load_app_config
 from dsh_py.loader import CORE_PROFILE, boot
 from dsh_py.sdk import final_response
 from dsh_py.services.agent import AgentOptions
@@ -59,20 +61,38 @@ async def main() -> None:
         help="用户层 profile .py 文件路径（默认 %(default)s；自定义组件时直接编辑该文件即可）",
     )
     parser.add_argument(
+        "--config", default=None, metavar="FILE",
+        help="配置文件 .py 路径（默认 configs/dsh_config.py + ~/.dsh/dsh_config.py 合并）",
+    )
+    parser.add_argument(
         "--patch", action="append", default=[], metavar="FILE",
         help="overlay patch .py 文件（可多次传入；按命令行顺序叠加在用户层之上）",
     )
-    parser.add_argument("--provider", default="openai", help="供应商（默认 openai）")
-    parser.add_argument("--model", default="gpt-4o", help="模型名（默认 gpt-4o）")
-    parser.add_argument("--system", default="", help="系统提示词")
+    parser.add_argument("--provider", default=None, help="供应商（缺省取配置文件 llm.provider，再兜底 openai）")
+    parser.add_argument("--model", default=None, help="模型名（缺省取配置文件 llm.model，再兜底 gpt-4o）")
+    parser.add_argument("--system", default=None, help="系统提示词")
+    parser.add_argument("--max-tokens", type=int, default=None, help="最大生成长度（缺省取配置文件 llm.max_tokens）")
     parser.add_argument("--mock", action="store_true", help="使用内置 mock 模型，离线演示")
     parser.add_argument(
         "--message", default=None, metavar="TEXT",
         help="headless 模式：跑完这一条任务即退出（对齐 dsh --profile headless \"task\"）",
     )
+    parser.add_argument(
+        "--jsonrpc", action="store_true",
+        help="SDK 运行时模式：stdio 上服务 newline JSON-RPC（stdout 仅承载协议帧）",
+    )
     args = parser.parse_args()
 
     ctx = AppContext()
+    # 先加载统一配置文件并注入 ctx（适配器 apply 时即可通过 ctx.appConfig 读取）
+    config = load_app_config(args.config)
+    ctx.provide("appConfig", config)
+    # CLI 显式参数优先；缺省从配置文件取；最后兜底内置默认
+    llm_cfg = config.get("llm") or {}
+    provider = args.provider or llm_cfg.get("provider") or "openai"
+    model = args.model or llm_cfg.get("model") or "gpt-4o"
+    system = args.system if args.system is not None else llm_cfg.get("system") or ""
+    max_tokens = args.max_tokens if args.max_tokens is not None else llm_cfg.get("max_tokens")
     # boot 管线：bundle 层（内置核心服务）→ 用户层（唯一装配点）→ overlays（--patch）
     layers = [CORE_PROFILE]
     if os.path.exists(args.profile):
@@ -84,13 +104,58 @@ async def main() -> None:
     boot(ctx, *layers)
 
     if args.mock:
-        # mock 模式：覆盖默认 provider 的适配器（bundle 层已注册，需 replace）
-        ctx.llm.register_adapter([args.provider], MockAdapter(), replace=True)
+        # mock 模式：把默认 provider 与 SDK 兜底路由（deepseek-official）都替换为
+        # MockAdapter——离线全链路演示不依赖真实端点（bundle 层已注册，需 replace）
+        for route in list(dict.fromkeys([provider, "deepseek-official"])):
+            ctx.llm.register_adapter([route], MockAdapter(), replace=True)
+
+    # SDK 运行时模式：stdio 上服务 newline JSON-RPC（对齐 dsh 的 sdk-jsonrpc-server）。
+    # stdout 只承载协议帧，日志/打印一律禁止（stderr 不受限）。
+    if args.jsonrpc:
+        import logging
+
+        logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+        from dsh_py.api.protocol import JsonRpcLineTransport
+        from dsh_py.api.server import HarnessSdkJsonRpcServer
+
+        transport = JsonRpcLineTransport()
+        server = HarnessSdkJsonRpcServer(ctx, transport)
+
+        async def serve() -> None:
+            loop = asyncio.get_running_loop()
+            shutdown_done: asyncio.Future = loop.create_future()
+            original_handler = server.handle_request
+
+            async def handler(method: str, params: dict) -> Any:
+                result = await original_handler(method, params)
+                # shutdown 响应写出后，主循环结束并收尾（对齐 dsh 的 setImmediate）
+                if method == "shutdown" and not shutdown_done.done():
+                    shutdown_done.set_result(None)
+                return result
+
+            transport.on_request(handler)
+            transport.start()
+            try:
+                # 退出条件：客户端 shutdown 完成，或 stdin EOF（客户端进程关闭）
+                while not shutdown_done.done() and not transport.eof:
+                    await asyncio.sleep(0.05)
+            finally:
+                await transport.close()
+                ctx.dispose()
+
+        await serve()
+        return
 
     session = ctx.sessions.create()
     # 经 agents 注册表创建 Agent（智能体循环本身是可替换的插件）
     agent = ctx.agents.create_agent(
-        session, AgentOptions(provider=args.provider, model=args.model, system=args.system)
+        session,
+        AgentOptions(
+            provider=provider,
+            model=model,
+            system=system,
+            max_tokens=max_tokens,
+        ),
     )
 
     # headless 模式：一条任务 → 打印最终 assistant 文本 → 退出（对齐 dsh 语义）。

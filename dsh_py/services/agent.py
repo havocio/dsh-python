@@ -26,7 +26,13 @@ from dsh_py.core.context import AppContext
 from dsh_py.core.service import Service
 from dsh_py.core.signal import CancelSignal, SignalCancelledError
 from dsh_py.services.inbox import Inbox
-from dsh_py.services.llm import ChunkType, GenerateOptions, LlmService, StreamChunk
+from dsh_py.services.llm import (
+    ChunkType,
+    GenerateOptions,
+    LlmError,
+    LlmService,
+    StreamChunk,
+)
 from dsh_py.services.message import (
     Message,
     MessageSource,
@@ -141,22 +147,31 @@ class Agent:
     消息经 :class:`Inbox` 投递（``next-turn`` 队列，可持久化重放）；取消经
     :class:`CancelSignal`（对标 AbortSignal）。``run(text)`` 是同步语义（投递 +
     等到处理完）；``insert()`` / ``cancel()`` / ``when_idle()`` 供异步投递场景。
+
+    构造即「发布」：向 ``agent/session-start`` 广播本 agent 及其来源
+    （``startup`` / ``resume``）。取消信号可融合多源（调用方 + 生命周期 + 工厂
+    teardown，对标 dsh 的 ``AbortSignal.any``）。
     """
 
-    def __init__(self, ctx: AppContext, session: Session, options: AgentOptions) -> None:
+    def __init__(self, ctx: AppContext, session: Session, options: AgentOptions,
+                 source: str = "startup", signal: Optional[CancelSignal] = None) -> None:
         self.ctx = ctx
         self.session = session
         self.options = options
+        self._source = source
         # 收件箱：投递/取出用户输入，变更落 agent/inbox/spliced 事件
         self.inbox = Inbox(session, {
             "inserted": lambda m: self.ctx.emit("agent/inbox/inserted", self, m),
             "discarded": lambda m: self.ctx.emit("agent/inbox/discarded", self, m),
             "claimed": lambda m, turn: self.ctx.emit("agent/inbox/claimed", self, m, turn),
         })
-        # 取消信号（调用方 cancel / 生命周期卸载可融合进来）
-        self._signal = CancelSignal()
+        # 取消信号：三源融合（调用方 cancel / 生命周期卸载 / 工厂 teardown），
+        # 融合后供主循环与 LLM 适配器检查（对标 dsh 的 AbortSignal.any）
+        self._signal = CancelSignal.any([signal]) if signal is not None else CancelSignal()
         self._running = False
         self._activity: Optional[asyncio.Task] = None
+        # 发布：广播本 agent 已进入会话（来源 startup / resume）
+        self.ctx.emit("agent/session-start", {"agent": self, "source": self._source})
 
     # -- 输入 ---------------------------------------------------------------- #
     def insert(self, message: Message, target: str = "next-turn") -> None:
@@ -176,6 +191,9 @@ class Agent:
         if self._running:
             return
         self._running = True
+        # 整个 agent 生命周期状态（对标 dsh 的 ``agent/status``：SDK 网关据此
+        # 推送 session.status，客户端靠它判断一轮 run 是否结束）
+        self.ctx.emit("agent/status", {"agent": self, "status": "running"})
         try:
             while self.inbox.has_pending:
                 self._signal.throw_if_aborted()  # 每轮检查取消
@@ -188,6 +206,7 @@ class Agent:
             pass  # 取消原因已由 _turn 记录
         finally:
             self._running = False
+            self.ctx.emit("agent/status", {"agent": self, "status": "idle"})
 
     # -- 取消 / 等待 ---------------------------------------------------------- #
     def cancel(self, cause: Any = None) -> None:
@@ -198,6 +217,22 @@ class Agent:
         """等待当前异步活动结束（若存在）。"""
         if self._activity is not None and not self._activity.done():
             await self._activity
+
+    def run_maintenance(self, job: Any) -> Any:
+        """同步检查空闲后，启动一个非 turn 维护任务（如手工压缩）。
+
+        仅当 agent 空闲时允许；活跃时同步抛 ``RuntimeError``（调用方应转译为
+        自己的 busy 语义）。维护任务持有融合了本 agent 取消信号的独立信号，
+        供任务体检查/传播。返回任务协程（调用方 ``await`` 之）。
+        """
+        if self._running:
+            raise RuntimeError("agent 活跃中，无法运行维护任务")
+        maintenance_signal = CancelSignal.any([self._signal])
+
+        async def _run() -> Any:
+            return await job(maintenance_signal)
+
+        return _run()
 
     async def _turn(self, first_user_messages: list[Message]) -> None:
         turn = self._next_turn_number()
@@ -290,14 +325,38 @@ class Agent:
         )
         # epoch 级调用配置记录到 header（对齐 dsh：请求从 header 构建，续跑复用）
         from dsh_py.services.call_config import call_config_from_options
-        self.session.header.request = call_config_from_options(options)
+        call_config = call_config_from_options(options)
+        self.session.header.request = call_config
+        # 最近路由请求的完整 header（config/system/tools）：compaction 摘要前缀复用
+        self.session.request_header = {
+            "config": {"provider": call_config.get("provider"), "model": call_config.get("model")},
+            "system": system,
+            "tools": options.tools,
+        }
 
         assembler = BlockAssembler()
-        stream: AsyncIterator[StreamChunk] = self.ctx.llm.stream(options)
-        async for chunk in stream:
-            # 逐帧广播，便于上层流式展示（对标 dsh 的 assistant/chunk）
-            self.session.append("assistant/chunk", {"turn": turn, "step": step, "chunk": chunk})
-            assembler.push(chunk)
+        # 请求失败可经 agent/request-error 瀑布流恢复（如 compaction 的上下文溢出
+        # 恢复返回 {"kind": "retry"} 决策 → 从替换后的表面重试本步）
+        while True:
+            try:
+                stream: AsyncIterator[StreamChunk] = self.ctx.llm.stream(options)
+                async for chunk in stream:
+                    # 逐帧广播，便于上层流式展示（对标 dsh 的 assistant/chunk）
+                    self.session.append("assistant/chunk", {"turn": turn, "step": step, "chunk": chunk})
+                    assembler.push(chunk)
+                break
+            except LlmError as exc:
+                async def default_recovery() -> Any:
+                    return None
+
+                decision = await self.ctx.waterfall(
+                    "agent/request-error",
+                    {"agent": self, "failure": exc, "signal": self._signal},
+                    inner=default_recovery,
+                )
+                if isinstance(decision, dict) and decision.get("kind") == "retry":
+                    continue  # 监听器已（可能）压缩表面；从新表面重试
+                raise
 
         finish = assembler.finish
         if finish.get("kind") == "error":
@@ -406,13 +465,30 @@ class AgentLoop(Service):
         self._agents: dict[str, Agent] = {}
         # 运行时设置源（settings 命名空间挂载后由 apply_loop 注入）：thunk -> dict
         self._settings_source: Any = None
+        # 工厂级 teardown 信号：工厂（本服务）卸载时 abort，传导到所有经
+        # resume/create 融合了它的 agent（对标 dsh 的 FactoryOwnership.signal）
+        self._teardown = CancelSignal()
+        ctx.effect(lambda: lambda: self._teardown.abort("agent loop is not active"))
         ctx.agents.set_factory(self)
 
-    def create_agent(self, session: Session, options: Optional[AgentOptions] = None) -> Agent:
-        """基于一个会话创建默认 Agent。"""
-        agent = Agent(self.ctx, session, options or AgentOptions())
+    def create_agent(self, session: Session, options: Optional[AgentOptions] = None,
+                     source: str = "startup", signal: Optional[CancelSignal] = None) -> Agent:
+        """基于一个会话创建默认 Agent；``source`` 为发布来源（startup/resume）。"""
+        agent = Agent(self.ctx, session, options or AgentOptions(), source=source, signal=signal)
         self._agents[session.header.id] = agent
         return agent
+
+    def resume(self, session_id: str, options: Optional[AgentOptions] = None,
+               signal: Optional[CancelSignal] = None) -> Agent:
+        """从持久化恢复一个 agent（会话历史 + 循环），发布来源为 ``resume``。
+
+        取消三源融合：调用方信号 + 本循环工厂 teardown 信号（对标 dsh 的
+        ``AbortSignal.any([caller, factory, owner])``）。会话不存在或未挂持久化
+        后端时，由 ``sessions.resume`` 抛出明确错误。
+        """
+        session = self.ctx.sessions.resume(session_id)
+        fused = CancelSignal.any([signal, self._teardown])
+        return self.create_agent(session, options, source="resume", signal=fused)
 
     def current_parallel_limit(self) -> Optional[int]:
         """从运行时设置读取当前最大并行工具调用数（无设置源返回 None）。"""
@@ -442,7 +518,34 @@ apply_loop_agent_schema = z.object({
     "system": z.string().default(""),
     "sessionId": z.string().optional(),
     "resumeSessionId": z.string().optional(),
+    "cwd": z.string().optional(),
+    "maxTokens": z.integer().optional(),
 })
+
+
+def validate_configured_agents(agents: list[dict]) -> None:
+    """拒绝自包含的身份冲突（对标 dsh 的 ``validateConfiguredAgents``）。
+
+    - ``sessionId`` 与 ``resumeSessionId`` 互斥（不能同时指定）；
+    - 不同 agent 不得使用重复的精确会话身份（同一 id 会被第二次挂载覆盖）。
+    """
+    exact_identities: dict[str, str] = {}
+    for entry in agents:
+        agent_id = entry.get("id", "") or ""
+        session_id = entry.get("sessionId")
+        resume_id = entry.get("resumeSessionId")
+        has_resume = resume_id is not None and resume_id != ""
+        if session_id is not None and has_resume:
+            raise RuntimeError(f"agent {agent_id!r}: sessionId 与 resumeSessionId 互斥")
+        exact_identity = resume_id if has_resume else session_id
+        if exact_identity is None:
+            continue
+        first_id = exact_identities.get(exact_identity)
+        if first_id is not None:
+            raise RuntimeError(
+                f"agents {first_id!r} 与 {agent_id!r} 使用重复的精确会话身份 {exact_identity!r}"
+            )
+        exact_identities[exact_identity] = agent_id
 
 
 def apply_loop(ctx: AppContext, config: Any = None) -> None:
@@ -458,6 +561,8 @@ def apply_loop(ctx: AppContext, config: Any = None) -> None:
     loop = AgentLoop(ctx)
     default_max_steps = config.get("max_steps")
     default_parallel = config.get("max_parallel_tool_calls")
+    # 声明式 agents 的自包含身份校验：互斥键 / 重复精确身份（启动即失败）
+    validate_configured_agents(config.get("agents", []))
     # 运行时设置命名空间（对标 dsh 的 AGENT_LOOP_SETTINGS_NAMESPACE）：
     # settings 服务挂载后，max_parallel_tool_calls 可在运行期被用户修改
     if ctx.has_service("settings"):
@@ -484,15 +589,16 @@ def apply_loop(ctx: AppContext, config: Any = None) -> None:
             system=entry.get("system", ""),
             max_steps=default_max_steps,
             max_parallel_tool_calls=default_parallel or 1,
+            max_tokens=entry.get("maxTokens"),
         )
         if entry.get("resumeSessionId"):
             session = ctx.sessions.resume(entry["resumeSessionId"])
         elif entry.get("sessionId"):
             # 固定会话 id：prepare 时即指定（须在 enter 前）
-            session = ctx.sessions.prepare(session_id=entry["sessionId"])
+            session = ctx.sessions.prepare(session_id=entry["sessionId"], cwd=entry.get("cwd"))
             ctx.sessions.enter(session)
         else:
-            session = ctx.sessions.create()
+            session = ctx.sessions.create(cwd=entry.get("cwd"))
         ctx.agents.create_agent(session, options)
 
 

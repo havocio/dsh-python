@@ -130,6 +130,22 @@ class EventBus:
             if loop is not None and asyncio.iscoroutine(result):
                 asyncio.ensure_future(result)
 
+    def dispatch(self, name: str, *args: Any, scope: Any = None) -> list[Any]:
+        """逐个调用监听器，**隔离**单个监听器的异常（contained）。
+
+        与 dsh 的 ``ctx.events.dispatch('emit', args)`` 语义一致：注册表类通知
+        （如 ``llm/adapters-updated``）是非否决的——一个监听器失败不得阻断其余
+        监听器，也不得使注册提交回滚。返回各监听器的返回值列表。
+        """
+        results: list[Any] = []
+        for listener in self._listeners(name, scope):
+            try:
+                results.append(listener(*args))
+            except Exception:  # noqa: BLE001 - contained：通知失败不影响注册提交
+                continue
+        return results
+
+
     async def parallel(self, name: str, *args: Any, scope: Any = None) -> None:
         """并发 await 所有监听器；任一个失败即抛出聚合异常。"""
         results = await asyncio.gather(

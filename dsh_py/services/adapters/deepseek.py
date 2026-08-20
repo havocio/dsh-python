@@ -650,6 +650,11 @@ def apply(ctx: AppContext, config: Any = None) -> None:
             return state["last_good"]
 
     async def resolve_api_key(connection: dict) -> str:
+        # 1. 统一配置文件优先（llm.api_key，不依赖环境变量）
+        if ctx.has_service("appConfig"):
+            configured = ctx.appConfig.get("llm.api_key")
+            if configured:
+                return configured
         ref = connection["apiKeyEnv"]
         credentials = ctx.credentials if ctx.has_service("credentials") else None
         if credentials is not None:
@@ -660,8 +665,9 @@ def apply(ctx: AppContext, config: Any = None) -> None:
         if ambient:
             return ambient
         raise LlmError(
-            f'llm-deepseek: no API key for provider route "{PROVIDER}"; store {ref} through '
-            f"the credentials service or export {ref} in the launching environment",
+            f'llm-deepseek: no API key for provider route "{PROVIDER}"; set llm.api_key in '
+            f"the config file, store {ref} through the credentials service, or export "
+            f"{ref} in the launching environment",
             "MISSING_CREDENTIAL",
         )
 
