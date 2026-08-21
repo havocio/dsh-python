@@ -157,6 +157,7 @@ class Agent:
                  source: str = "startup", signal: Optional[CancelSignal] = None) -> None:
         self.ctx = ctx
         self.session = session
+        self.id = session.header.id  # agent 与所属会话绑定，id 取其会话 id
         self.options = options
         self._source = source
         # 收件箱：投递/取出用户输入，变更落 agent/inbox/spliced 事件
@@ -269,11 +270,15 @@ class Agent:
                 step_result = await self._step(turn, step)
                 self.session.append("step/end", {"turn": turn, "step": step})
                 pending = []
-                if step_result is None:
+                turn_ends, additional = step_result
+                # 注入执行后富化的额外上下文（如 repeat-tool-reminder 的重复提醒）：
+                # 作为 user/message 进入历史，下一 step 的 derive_messages 即携带它们
+                for msg in additional:
+                    self.session.append("user/message", msg)
+                if turn_ends is None:
                     # 工具调用已执行并产生工具结果，进入下一 step 处理
                     pending = self._collect_tool_results(turn, step)
                     continue
-                turn_ends = step_result
                 break
         except SignalCancelledError as exc:
             # 取消：以 cancelled 原因收尾本 turn（dsh 的取消语义）
@@ -360,7 +365,7 @@ class Agent:
 
         finish = assembler.finish
         if finish.get("kind") == "error":
-            return finish
+            return finish, []
 
         assistant_msg = create_assistant_message(
             assembler.blocks, provider=self.options.provider, model=self.options.model
@@ -371,22 +376,27 @@ class Agent:
         )
 
         if finish.get("kind") == "max-tokens":
-            return {"kind": "max-tokens"}
+            return {"kind": "max-tokens"}, []
 
         tool_calls = [b for b in assembler.blocks if isinstance(b, ToolCallBlock)]
         if not tool_calls:
-            return {"kind": "completed"}
+            return {"kind": "completed"}, []
 
         # 执行工具并把结果回填（有界并行，结果按原调用顺序回填）
-        await self._execute_tool_calls(tool_calls, turn, step)
-        return None  # 需继续下一 step 处理工具结果
+        additional = await self._execute_tool_calls(tool_calls, turn, step)
+        return None, additional  # 需继续下一 step 处理工具结果
 
-    async def _execute_tool_calls(self, tool_calls: list[ToolCallBlock], turn: int, step: int) -> None:
+    async def _execute_tool_calls(self, tool_calls: list[ToolCallBlock], turn: int, step: int) -> list:
         """有界并行执行一批工具调用（对标 dsh 的 executeToolCalls + maxParallelToolCalls）。
 
         - 并发度受 ``max_parallel_tool_calls`` 限制（信号量）；
         - 结果按**原调用顺序**回填（tool/call + tool/result 事件稳定，历史可预测）；
-        - 每个工具的错误都作为文本结果回流（工具执行永不向上抛）。
+        - 每个工具的错误都作为文本结果回流（工具执行永不向上抛）；
+        - 经 ``tools/execute`` + ``tools/post-execute`` 瀑布流，收集各工具产生的
+          ``additionalContexts``（如 repeat-tool-reminder 的重复提醒），返回给
+          调用方注入下一 step。
+
+        返回 ``additional_contexts``（Message 列表）。
         """
         semaphore_limit = max(1, self.options.max_parallel_tool_calls or 1)
         # 运行时设置优先：settings 命名空间挂载后，改配置即时生效（对标 dsh）
@@ -396,13 +406,15 @@ class Agent:
             if live:
                 semaphore_limit = max(1, live)
         semaphore = asyncio.Semaphore(semaphore_limit)
+        additional: list = []
 
-        async def run_one(tc: ToolCallBlock) -> tuple[ToolCallBlock, tuple[str, bool]]:
+        async def run_one(tc: ToolCallBlock) -> tuple[ToolCallBlock, tuple[str, bool, list]]:
             async with semaphore:
-                return tc, await self.ctx.tools.execute(tc.name, tc.arguments)
+                return tc, await self.ctx.tools.execute_with_agent(
+                    tc.name, tc.arguments, agent=self, signal=self._signal)
 
         results = await asyncio.gather(*(run_one(tc) for tc in tool_calls))
-        for tc, (result_text, is_error) in results:  # gather 保序 → 按原顺序回填
+        for tc, (result_text, is_error, extra) in results:  # gather 保序 → 按原顺序回填
             self.session.append(
                 "tool/call",
                 {"turn": turn, "step": step, "callId": tc.id, "name": tc.name, "arguments": tc.arguments},
@@ -415,6 +427,17 @@ class Agent:
                 "tool/result",
                 {"turn": turn, "step": step, "message": tr_msg},
             )
+            additional.extend(extra)
+        return additional
+
+    def followup(self, message: Message) -> None:
+        """把一个插件来源的消息作为「后续跟进」投递并触发下一轮（对标 dsh 的 ``agent.followup``）。
+
+        与 :meth:`insert` 同语义（入收件箱 + 空闲时启动异步处理），区别在于投递的
+        消息通常是 plugin 来源（不会被 repeat-tool-reminder 判定为用户打断而重置
+        重复计数）。schedule 的提醒即经此通道注入。
+        """
+        self.insert(message)
 
 
 class AgentRegistry(Service):
@@ -477,6 +500,17 @@ class AgentLoop(Service):
         agent = Agent(self.ctx, session, options or AgentOptions(), source=source, signal=signal)
         self._agents[session.header.id] = agent
         return agent
+
+    def get(self, session_id: str) -> Optional[Agent]:
+        """按会话 id 取当前已创建的 Agent（对齐 dsh 的 ``ctx.agents.get(id)``）。"""
+        return self._agents.get(session_id)
+
+    def roots(self) -> list:
+        """返回当前所有「根」Agent（对齐 dsh 的 ``ctx.agents.roots()``）。
+
+        dsh_py 当前没有子 agent 嵌套，所有经工厂创建的 Agent 均为根，故返回全集。
+        """
+        return list(self._agents.values())
 
     def resume(self, session_id: str, options: Optional[AgentOptions] = None,
                signal: Optional[CancelSignal] = None) -> Agent:

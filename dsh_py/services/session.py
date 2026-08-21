@@ -39,6 +39,9 @@ class SessionHeader:
     request: Optional[dict] = None
     # 谱系：父会话 id（subagent 派生场景；traceSession 沿此链）
     parent_session: Optional[str] = None
+    # 持久 fork 种子长度：本会话继承自上游（如 resume 的派生）的不可变前缀长度；
+    # schedule 等包折叠时排除该前缀，仅拥有其后缀（对齐 dsh 的 header.seedLength）
+    seed_length: int = 0
 
 
 # 表面事件类型：这些事件承载模型可见消息

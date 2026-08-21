@@ -30,6 +30,8 @@ class ToolEntry:
     description: str
     parameters: dict
     handler: ToolHandler
+    # 声明式截止（毫秒）：timeout-policy 插件据此强制工具执行时限；未声明为 None
+    timeout_ms: Optional[int] = None
 
 
 def json_schema_to_schema(node: dict) -> Schema:
@@ -88,9 +90,21 @@ class ToolService(Service):
         description: str,
         parameters: dict,
         handler: ToolHandler,
+        timeout_ms: Optional[int] = None,
     ) -> None:
-        """登记一个工具（同名覆盖）。"""
-        self._tools[name] = ToolEntry(name=name, description=description, parameters=parameters, handler=handler)
+        """登记一个工具（同名覆盖）。
+
+        :param timeout_ms: 声明式执行截止（毫秒），供 timeout-policy 插件强制。
+        """
+        self._tools[name] = ToolEntry(
+            name=name, description=description, parameters=parameters,
+            handler=handler, timeout_ms=timeout_ms,
+        )
+
+    def get(self, name: str, agent: Any = None) -> Optional[ToolEntry]:
+        """按名取已登记工具条目（含 ``timeout_ms``）。``agent`` 参数保留以对齐 dsh 的
+        ``ctx.tools.get(name, agent)`` 签名，当前所有工具全局可见，忽略 agent 维度。"""
+        return self._tools.get(name)
 
     def list_schemas(self) -> list[dict]:
         """产出供模型使用的工具 schema 列表。"""
@@ -102,31 +116,87 @@ class ToolService(Service):
     def has(self, name: str) -> bool:
         return name in self._tools
 
+    async def execute_with_agent(
+        self, name: str, arguments_json: str, agent: Any = None, signal: Any = None,
+    ) -> tuple[str, bool, list]:
+        """带拦截上下文执行工具（agent 主循环使用）。
+
+        经两条瀑布流（对标 dsh 的 ``tools/execute`` → ``tools/post-execute``）：
+        - ``tools/execute``：内层执行真实 handler；监听器可拦截/替换（如 timeout-policy）。
+        - ``tools/post-execute``：执行后富化；监听器可返回 ``additionalContexts``
+          （额外的 user 消息，如 repeat-tool-reminder 的重复提醒）。
+
+        返回 ``(结果文本, 是否错误, additional_contexts)``。``additional_contexts``
+        是 :class:`dsh_py.services.message.Message` 列表，由 agent 主循环注入下一
+        步。参数/工具/异常错误均归为文本结果，不向上抛。
+        """
+        import json
+
+        entry = self._tools.get(name)
+        if entry is None:
+            return f"未知工具：{name}", True, []
+        exec = {"name": name, "arguments": arguments_json, "agent": agent, "signal": signal}
+
+        # 内层生产者：解析 + 校验 + 调用 handler（对标 dsh 的 ToolRuntime 内层）
+        async def inner() -> tuple[str, bool]:
+            try:
+                arguments = json.loads(arguments_json) if arguments_json else {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+            except json.JSONDecodeError as exc:
+                return f"参数 JSON 解析失败：{exc}", True
+            invalid = validate_args(arguments, entry.parameters)
+            if invalid is not None:
+                return f"工具 {name!r} 参数校验失败：{invalid}", True
+            try:
+                # 需要 agent/信号上下文的工具（如 schedule_*）声明两参 (arguments, exec)
+                import inspect
+                params = inspect.signature(entry.handler).parameters
+                if len(params) >= 2:
+                    return await entry.handler(arguments, exec)
+                return await entry.handler(arguments)
+            except Exception as exc:  # noqa: BLE001
+                return f"工具执行异常：{exc}", True
+
+        result = await self.ctx.waterfall("tools/execute", {"exec": exec}, inner=inner)
+        # 监听器（如 timeout-policy）可能返回结构化结果，统一归约为 (text, is_error)
+        if isinstance(result, tuple) and len(result) >= 2:
+            text, is_error = result[0], result[1]
+        else:
+            text, is_error = str(result), True
+
+        # 执行后富化瀑布流：收集 additionalContexts（默认空）
+        async def default_post() -> dict:
+            return {"kind": "pass", "additionalContexts": []}
+
+        post = await self.ctx.waterfall(
+            "tools/post-execute",
+            {"exec": exec, "result": {"content": [{"type": "text", "text": text}], "isError": is_error}},
+            inner=default_post,
+        )
+        additional = post.get("additionalContexts", []) if isinstance(post, dict) else []
+        # 对齐 dsh 的 post-execute 决策：``accept`` 可携带 ``content`` 替换最终
+        # 模型可见文本（如 spill-policy 把超大结果替换为预览 + 取回定位符）。
+        # 现有监听器（hooks/guard）不携带 content，行为不受影响。
+        if isinstance(post, dict) and post.get("content") is not None:
+            replaced = post["content"]
+            joined = "".join(
+                b["text"] for b in replaced
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+            )
+            if joined:
+                text = joined
+        return text, is_error, list(additional)
+
     async def execute(self, name: str, arguments_json: str) -> tuple[str, bool]:
         """按名字执行工具；``arguments_json`` 是模型给出的原始 JSON 字符串。
 
-        返回 ``(结果文本, 是否错误)``。参数解析失败 / 校验失败 / 工具不存在 /
-        handler 异常均归为错误结果，不向上抛——工具错误应当作为可观测的文本
-        回流给模型。
+        返回 ``(结果文本, 是否错误)``。直接/跨进程调用走此入口；agent 主循环改走
+        :meth:`execute_with_agent` 以收集 ``additionalContexts``。二者都经过
+        ``tools/execute`` 瀑布流（无监听器时透明）。
         """
-        entry = self._tools.get(name)
-        if entry is None:
-            return f"未知工具：{name}", True
-        try:
-            import json
-            arguments = json.loads(arguments_json) if arguments_json else {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-        except json.JSONDecodeError as exc:
-            return f"参数 JSON 解析失败：{exc}", True
-        # 执行前参数校验（对标 dsh 的 validateArgs）
-        invalid = validate_args(arguments, entry.parameters)
-        if invalid is not None:
-            return f"工具 {name!r} 参数校验失败：{invalid}", True
-        try:
-            return await entry.handler(arguments)
-        except Exception as exc:  # noqa: BLE001
-            return f"工具执行异常：{exc}", True
+        text, is_error, _ = await self.execute_with_agent(name, arguments_json)
+        return text, is_error
 
 
 def apply(ctx: AppContext, config: Any = None) -> None:

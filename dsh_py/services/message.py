@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from dsh_py.services.llm import ChunkType
 
@@ -69,6 +69,11 @@ class MessageSource:
     form: str = ""              # 语义形态：instructions | recall | catalog | snapshot | notice | relay
     provider: str = ""          # kind=='model' 时的供应商
     model: str = ""             # kind=='model' 时的模型
+    # kind=='goal' 时的目标回合归属（对齐 dsh 的 MessageSourceMap 合并：
+    # goal 来源携带 goalId/revision/round 供 goal 域折叠推进回合计数）
+    goalId: str = ""            # 所属目标 id
+    revision: Optional[int] = None  # 目标修订号
+    round: Optional[int] = None     # 准入的续行回合号
 
 
 # --------------------------------------------------------------------------- #
