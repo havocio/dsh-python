@@ -84,6 +84,22 @@ class Inbox:
                 return True
         return False
 
+    def replace(self, message_id: str, message: Message) -> bool:
+        """用一条新消息就地替换一条等待中的消息（持久化记录一次替换拼接）。
+
+        对标 dsh 的 ``inbox.replace``：旧消息按其 id 移出（视作取消并通知），新
+        消息接管其位置。返回是否找到并替换了目标消息。
+        """
+        for target in ("next-step", "next-turn"):
+            index = next((i for i, m in enumerate(self._state[target]) if m.id == message_id), -1)
+            if index >= 0:
+                removed = self._splice(target, index, 1, [message])
+                notify = self.notifications.get("discarded")
+                if notify and removed:
+                    notify(removed[0])
+                return True
+        return False
+
     def clear(self) -> None:
         """清空全部待处理输入（先清 next-step，再清 next-turn）。"""
         self._splice("next-step", 0, len(self._state["next-step"]), [])

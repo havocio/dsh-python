@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, Awaitable, Callable, Optional
 
@@ -357,6 +358,70 @@ async def _as_awaitable(value: Any) -> Any:
     if isinstance(value, asyncio.Future):
         return await value
     return value
+
+
+def create_bash_job_hooks(
+    ctx: AppContext,
+    command: str,
+    cwd: Optional[str] = None,
+    output_limit_bytes: Optional[int] = None,
+) -> dict:
+    """经 ``ctx.subprocess`` seam 生成一个 bash 后台任务的 hooks（**真实子进程**）。
+
+    返回 ``{"done": awaitable, "cancel": fn, "readOutput": fn}``，供
+    ``ctx.jobs.start({"kind": "bash", "run": lambda: hooks, ...})`` 使用。
+    取消为**树级**终止（POSIX 进程组 / Windows taskkill /T）；输出为有界收集
+    （tail-keep），``readOutput`` 增量偏移读。终端状态：``completed``（退出码
+    0）/ ``failed``（非零）/ ``killed``（信号终止）。
+    """
+    from dsh_py.services.shell import ShellService
+    from dsh_py.services.subprocess import SubprocessCollect, SubprocessSpawnSpec, SubprocessStdio
+
+    shell = ShellService._default_shell()
+    base = os.path.basename(shell).lower()
+    argv = (shell, "/c", command) if base in ("cmd", "cmd.exe") else (shell, "-c", command)
+    cap = output_limit_bytes if output_limit_bytes is not None and output_limit_bytes > 0 else 4 * 1024 * 1024
+    spec = SubprocessSpawnSpec(
+        argv=argv,
+        cwd=cwd or os.getcwd(),
+        stdio=SubprocessStdio(
+            stdin="ignore",
+            stdout=SubprocessCollect(maxBytes=cap),
+            stderr=SubprocessCollect(maxBytes=cap),
+        ),
+        graceMs=2000,
+    )
+    handle = ctx.subprocess.spawn(spec)
+    # 终止标志：Windows taskkill 强杀后退出码非零，无法靠退出码区分「被杀」与
+    # 「失败」——取消请求显式记录，终态映射优先认领 killed。
+    killed = {"value": False}
+
+    async def _done() -> dict:
+        outcome = await handle.done
+        stdout = handle.collected.stdout.read_from(0)["text"] if handle.collected.stdout is not None else ""
+        if killed["value"]:
+            status = "killed"
+        elif outcome.exitCode == 0:
+            status = "completed"
+        elif outcome.exitCode is None:
+            status = "killed"
+        else:
+            status = "failed"
+        return {"status": status, "output": stdout}
+
+    def _cancel(_reason: Optional[str] = None) -> None:
+        killed["value"] = True
+        handle.terminate()
+
+    def _read_output() -> str:
+        if handle.collected.stdout is None:
+            return ""
+        return handle.collected.stdout.read_from(0)["text"]
+
+    # jobs 注册表按属性访问 hooks（hooks.cancel / hooks.readOutput / hooks.done）
+    from types import SimpleNamespace
+
+    return SimpleNamespace(done=_done(), cancel=_cancel, readOutput=_read_output)
 
 
 def apply(ctx: AppContext, config: Optional[dict] = None) -> None:

@@ -74,6 +74,12 @@ class MessageSource:
     goalId: str = ""            # 所属目标 id
     revision: Optional[int] = None  # 目标修订号
     round: Optional[int] = None     # 准入的续行回合号
+    # kind=='agent-instructions' 时携带的基线/变更归属（对齐 dsh 的
+    # MessageSourceMap 合并：agent-instructions 来源标记完整基线或后期增量，
+    # 并列出本次进入的逐文件 set/replace/remove 变更供可见性校验与去重）
+    baseline: Optional[bool] = None   # 是否为完整基线（区别于后期 delta）
+    baselineIdentity: str = ""        # 发现/优先级/预算身份，用于 resume 校验
+    changes: tuple = ()               # AgentInstructionChange 列表：{action, scope, path, digest?}
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +140,10 @@ def _encode_value(value: Any) -> Any:
                 "content": [_encode_value(b) for b in value.content], "is_error": value.is_error}
     if isinstance(value, MessageSource):
         return {"__source__": value.kind, "plugin": value.plugin, "form": value.form,
-                "provider": value.provider, "model": value.model}
+                "provider": value.provider, "model": value.model,
+                "goalId": value.goalId, "revision": value.revision, "round": value.round,
+                "baseline": value.baseline, "baselineIdentity": value.baselineIdentity,
+                "changes": value.changes}
     if isinstance(value, tuple):
         return [_encode_value(x) for x in value]
     if isinstance(value, list):
@@ -173,7 +182,12 @@ def _decode_value(value: Any) -> Any:
         if "__source__" in value:
             return MessageSource(kind=value["__source__"], plugin=value.get("plugin", ""),
                                  form=value.get("form", ""), provider=value.get("provider", ""),
-                                 model=value.get("model", ""))
+                                 model=value.get("model", ""),
+                                 goalId=value.get("goalId", ""), revision=value.get("revision"),
+                                 round=value.get("round"),
+                                 baseline=value.get("baseline"),
+                                 baselineIdentity=value.get("baselineIdentity", ""),
+                                 changes=tuple(value.get("changes", ())))
         return {k: _decode_value(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_decode_value(x) for x in value]

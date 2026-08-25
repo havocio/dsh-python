@@ -42,6 +42,7 @@ from dsh_py.services.message import (
     ToolResultBlock,
     create_assistant_message,
     create_user_message,
+    new_id,
 )
 from dsh_py.services.session import Session, SessionService
 
@@ -427,6 +428,16 @@ class Agent:
                 "tool/result",
                 {"turn": turn, "step": step, "message": tr_msg},
             )
+            # 广播工具执行结果（对齐 dsh 的 tools/result）：供 agent-instructions
+            # 等插件侦听 read/write/edit 的「文件触碰」以刷新工作区上下文。
+            self.ctx.emit("tools/result", {
+                "name": tc.name,
+                "arguments": tc.arguments,
+                "agent": self,
+                "signal": self._signal,
+                "token": new_id(),
+                "parent": None,
+            }, {"isError": is_error})
             additional.extend(extra)
         return additional
 

@@ -37,6 +37,24 @@ class LlmError(Exception):
         return f"[{self.code}] {self.message}"
 
 
+class HarnessError(Exception):
+    """harness 统一错误基类（对标 dsh 的 dsh-llm ``HarnessError``）。
+
+    dsh 中 ``LlmError``/``WorkflowError`` 等均派生自它，携带机器可路由的
+    ``code`` 分类与 ``cause`` 链。dsh_py 现有 ``LlmError`` 保持独立（避免
+    改动既有行为），此基类供后续新包（如 workflow）派生使用。
+    """
+
+    def __init__(self, message: str, code: str = "UNKNOWN", *, cause: Any = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.cause = cause
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}"
+
+
 # 合法 API key 字符集：可打印 ASCII、不含空格（对齐 dsh 的 LEGAL_API_KEY）
 _LEGAL_API_KEY = re.compile(r"^[\x21-\x7E]+$")
 
