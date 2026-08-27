@@ -2,7 +2,7 @@
 
 用 **Python 一比一复刻 [dsh](https://github.com/deepseek-ai/dsh)**（DeepSeek Harness）的完整功能——让不懂 TypeScript 的开发者也能用上 dsh 的全套「全插件式」Agent 框架能力。
 
-> **现状**：第 0/2/4 层全部完成；第 3 层支撑服务 **29/约35 包**已落地；**59 个测试模块全绿**（约 500+ 断言）；框架内核零第三方依赖。
+> **现状**：第 0/2/4 层全部完成；第 3 层支撑服务 **40 包代码已落地**——含 `code-runtime`/`sandbox`/`lsp`/`acp`/`tmux-context`/`e2b` 六包（按「seam + 本地后端/占位」范式翻译，均通过 `py_compile`，**暂未做运行时验证与单测**）、**`web` 家族**（web seam + 抓取/搜索 provider + `web_search`/`web_fetch` 工具）、**`skill` 家族**（`ctx.skills` 分层注册表 + filesystem/badge provider + `skill` 工具与目录/手势注入，先移植了 `dsh-scope` 子系统）、**`workspace`**（`ctx.workspaceRegistry` 耐久工作区注册表）、**`preset`**（`ctx.agentPresets` 预设注册表：发现/创作/常驻挂载 + `persona` 行，依赖 PyYAML）、**`interaction` 家族**（`ctx.commands` 命令注册表 + `ctx.approval` 批准服务 + `ctx.userQuestions` 提问 seam + `ctx.permissionPresets` 权限预设 + `ask_user_question` 工具）；web/skill/workspace/preset/interaction 均端到端冒烟已验证；**59 个测试模块全绿**（约 500+ 断言）；框架内核零第三方依赖。
 
 ---
 
@@ -35,7 +35,7 @@ dsh_py 是把 dsh 的 **TypeScript 实现逐包翻译成 Python** 的忠实复�
   - *Session* — JSONL/SQLite+zstd 持久化、resume、checkpoint 崩溃恢复、projection/projection-cache/stats、session-query 完整检索
   - *Agent* — Inbox 双队列、cancel 三源融合（caller+fiber+factory）、声明式 agents、resume、有界并行工具执行
   - *LLM* — call-config 三层合并、retry 指数退避、api-key 解析链、attribution/brand 强制归属、适配器拓扑通知、多路由（7 厂商 OpenAI 兼容 + deepseek 官方 + pi-ai 通用）
-- **支撑服务 29 包**：system-prompt 组装、tools 完整版（schema 校验 + 信号量并行）、subagent、settings+credentials、MCP 客户端桥接（stdio + streamable-http）、compaction 记忆压缩全套、guard 护栏、hooks 协议桥、schedule 定时器、todo、attachment、feedback、storage 多后端、spill、identity、jobs 后台任务、context 家族（time-context / session-reference / long-term-memory / agent-instructions）、goal 家族（事件溯源 + 三工具 + 续行驱动）、plan-mode、**workflow 编排引擎**（脚本解释执行 + workflow/ralph 两工具）、**subprocess 进程 seam**、typert 声明式远程调用、invariants 自检
+- **支撑服务 40 包**：system-prompt 组装、tools 完整版（schema 校验 + 信号量并行）、subagent、settings+credentials、MCP 客户端桥接（stdio + streamable-http）、compaction 记忆压缩全套、guard 护栏、hooks 协议桥、schedule 定时器、todo、attachment、feedback、storage 多后端、spill、identity、jobs 后台任务、context 家族（time-context / session-reference / long-term-memory / agent-instructions）、goal 家族（事件溯源 + 三工具 + 续行驱动）、plan-mode、**workflow 编排引擎**（脚本解释执行 + workflow/ralph 两工具）、**subprocess 进程 seam**、typert 声明式远程调用、invariants 自检、code-runtime / sandbox / lsp / acp / tmux-context / e2b（seam + 本地后端/占位）、**web 家族**（`ctx.web` seam + HTTP 抓取 provider + DeepSeek/Exa/Perplexity 搜索 provider + `web_search`/`web_fetch` 工具）、**skill 家族**（`ctx.skills` 分层注册表 + filesystem/badge provider + `skill` 工具 / 会话目录 / `/name` 手势注入；依赖先移植的 **`dsh-scope` 子系统**）、**workspace**（`ctx.workspaceRegistry` 耐久工作区注册表：域数据形式 + 一次性历史引导 + 会话头部成员校验 + 归档集）、**preset**（`ctx.agentPresets` 预设注册表：发现/健康检查/创作（复制/删除）/常驻挂载 + agent 加入/重链 + `persona` 可组合行）、**interaction 家族**（`ctx.commands` 斜杠命令注册表（ScopedLayers 分层 + `command/run`↔`command/done` 生命周期）、`ctx.approval` 批准服务（策略折叠 + 审计对 + fail-closed）、`ctx.userQuestions` 提问 seam（唯一 provider + 存活/委托/意图校验）、`ctx.permissionPresets` 权限预设（沙箱/批准旋钮捆绑 + `permissions` 投影 + `/permission` 命令）、`ask_user_question` 工具）
 - **应用层**：进程内 SDK（`DeepSeekHarness`）、跨进程 newline JSON-RPC SDK、WebSocket 常驻网关、交互式 CLI + headless 单任务模式
 
 **依赖策略**：框架内核零第三方依赖；HTTP 类适配器（OpenAI 兼容 / DeepSeek / MCP streamable-http）懒加载 `httpx`；sqlite 后端可选 `zstandard` 压缩；Web 网关依赖 `websockets`（均仅应用层）。新依赖统一装入隔离 venv（`C:/Users/jdn/.workbuddy/binaries/python/envs/default`），引入时在模块 docstring 注明用途。
@@ -48,7 +48,7 @@ dsh_py 是把 dsh 的 **TypeScript 实现逐包翻译成 Python** 的忠实复�
 ┌─ 第 4 层 应用层 ─────────────────────────────────────────────┐
 │  cli.py（交互/headless/--jsonrpc）  sdk.py（进程内）          │
 │  api/（跨进程 JSON-RPC over stdio）  gateway.py + websocket   │
-├─ 第 3 层 支撑服务（29/约35 包，全部插件装配）─────────────────┤
+├─ 第 3 层 支撑服务（40 包，全部插件装配）────────────────────────┤
 │  system-prompt · tools · settings · credentials · subagent · │
 │  mcp · compaction · fs/shell/terminal · guard · hooks ·      │
 │  schedule · todo · attachment · feedback · util · storage ·  │
@@ -350,6 +350,28 @@ dsh_py/
 │   subagents.py                  ctx.subagents seam（workflow 子 agent）
 │   subprocess.py                 ctx.subprocess seam（完全指定 SpawnSpec + env scrub）
 │   subprocess_local.py           树级 spawn（killpg/taskkill）+ OutputCollector + parse_proc_stat
+│   web.py                        ctx.web seam（搜索/抓取 provider 注册表 + 执行期选择）
+│   web_fetch_http.py             HTTP(S) 抓取 provider（httpx 懒加载、同源重定向、尺寸/超时上限）
+│   web_search_deepseek.py        DeepSeek 官方搜索（Anthropic Messages + web_search_20250305）
+│   web_search_exa.py / web_search_perplexity.py   Exa / Perplexity 搜索 provider
+│   scope.py                     dsh-scope 移植：ScopeKey/父链/NamedEntries/ScopedLayers
+│   skill.py                     ctx.skills 分层注册表（provider 合并/rank 裁决/collect 缓存）
+│   skill_filesystem.py          本地目录技能 provider（pathlib 发现 + frontmatter 解析）
+│   skill_watch.py               可选 watchdog 目录监视（懒加载，缺依赖降级不监视）
+│   skill_badge.py               内置 dsh-badge 技能（正文内嵌）
+│   workspace.py                 workspace 域词汇/实体（spec/entity/paths，域数据形式）
+│   workspace_registry.py        ctx.workspaceRegistry 耐久注册表（create/delete/排序/归档/引导）
+│   agent_presets/               ── agent-presets（预设注册表）──
+│     __init__.py                AgentPresets 服务（发现/创作/常驻挂载/加入/重链）
+│     discovery.py               扫描根 + 组合健康检查（agent.cordis.yml）
+│     authoring.py               复制/删除/读取（user 根限定）
+│     metadata.py                preset.yml 显示元数据（懒 yaml）
+│     mount.py                   组合装载（load_profile 适配）+ 常驻查找
+│     session.py / preset.py     会话预设解析 / 词汇与错误
+│   commands.py                  ctx.commands 命令注册表（ScopedLayers 分层 + execute 生命周期）
+│   user_approval.py             ctx.approval 批准服务（策略折叠 + ask/decided 审计对 + fail-closed）
+│   user_questions.py            ctx.userQuestions 提问 seam（唯一 provider + ask 校验）
+│   permission_presets.py        ctx.permissionPresets 权限预设（旋钮捆绑 + 投影 + /permission 命令）
 │   goal.py / goal_fold.py / goal_round_driver.py
 │   plan_mode.py / hooks_protocol.py / schedule.py / schedule_domain.py
 │   attachment.py / attachment_image.py / attachment_local.py
@@ -371,6 +393,10 @@ dsh_py/
 │   system_instructions.py / long_term_memory.py / subagent.py
 │   tool_fs.py / tool_bash.py / tool_terminal.py / tool_todo.py
 │   tool_goal.py / tool_jobs.py / tool_workflow.py / tool_ralph.py
+│   tool_web.py                  web_search / web_fetch 工具（HTML 深度守卫 + markdownify 懒加载）
+│   tool_skill.py                skill 工具 + 会话目录 + /name 手势注入（skill-catalog / skill-invocation 来源）
+│   persona.py                   逐 agent 人格（scope-only，遮蔽部署人格）
+│   tool_ask_user.py             ask_user_question 工具（暂停等待人类回答）
 │   command_compact.py / command_feedback.py / command_goal.py
 │   guard_repeat_tool.py / guard_timeout.py / hooks.py / spill_policy.py
 │   time_context.py / mcp_client/          MCP 桥接（client + bridge + 插件入口）
@@ -399,10 +425,10 @@ dsh_py/
 | **第 0 层 · 内核** | Fiber 状态机 + effect / 作用域树（isolate 多会话隔离）/ schema 校验 / inject 拓扑 + 延迟就绪 / 内置 logger·reflect·registry / Loader-Boot（多 layer + env + 热重载） | ✅ 完成 |
 | **第 1 层 · Loader/Boot** | 多 layer profile 合并、`--patch` overlay、schema 校验 + 拓扑排序、可卸载插件、热重载 watcher、环境变量插值 | ✅ 完成 |
 | **第 2 层 · 三 seam** | Session（JSONL + SQLite/zstd + resume + checkpoint + projection/query 完整版）/ Agent（Inbox / cancel 三源 / 声明式 / resume）/ LLM（call-config / retry / api-key / attribution / topology / 多路由适配器） | ✅ 完成 |
-| **第 3 层 · 支撑服务** | 29 个功能包（见 8.2 清单）；未做 5 个（见 8.3） | ✅ 29/约35 |
+| **第 3 层 · 支撑服务** | 40 个功能包（见 8.2 清单）；六包按「seam + 本地后端/占位」翻译、代码已落地、**未经运行时验证与单测**（见 8.3）；`web`/`skill`/`workspace`/`preset`/`interaction` 已冒烟验证 | ✅ 40 包（代码落地）|
 | **第 4 层 · 应用层** | 进程内 SDK / 跨进程 JSON-RPC SDK / WebSocket 网关 / headless + 交互 CLI / `--jsonrpc` 子进程模式 | ✅ 完成（`acp-agent`/`host`/跨语言 client 完整版未做） |
 
-### 8.2 第 3 层已落地 29 包清单
+### 8.2 第 3 层已落地 40 包清单
 
 | # | 包 | 实现位置 | 要点 |
 | --- | --- | --- | --- |
@@ -435,16 +461,32 @@ dsh_py/
 | 27 | `subprocess` | `services/subprocess.py` + `subprocess_local.py` | 进程执行 seam + 树级本地实现（killpg/taskkill） |
 | 28 | `goal-round-driver` | `services/goal_round_driver.py` | 同会话自动续行驱动（goal 家族闭环） |
 | 29 | `typert` | `services/typert.py` | @remote/@remote_scope 声明式远程调用 |
+| 30 | `code-runtime` | `services/code_runtime.py` + `code_runtime_local.py` | seam + `multiprocessing` 进程隔离后端（替 worker_threads）+ RPC 管道承载 host bindings；错误作结果字段非拒绝 |
+| 31 | `sandbox` | `services/sandbox.py` + `sandbox_local.py` + `sandbox_policy.py` | seam + bwrap/seatbelt/Windows-ACL 占位（fail-closed）+ 会话模式折叠 `effectiveSandboxMode` |
+| 32 | `lsp` | `services/lsp.py` + `lsp_stdio.py` + `plugins/tool_lsp.py` | seam + Content-Length JSON-RPC stdio 后端 + `lsp` 工具（1 基→0 基 UTF-16 光标） |
+| 33 | `acp` | `services/acp.py` | ACP stdin/stdout newline JSON-RPC 协议服务端（initialize/authenticate/sessions.new/prompt/cancel + 会话/agent 事件桥） |
+| 34 | `tmux-context` | `plugins/tmux_context.py` | 经 `ctx.shell.execute()` 跑 `tmux display-message` 捕获面板位置（$TMUX_PANE + controlling-tty 双重校验、变化抑制；Windows 无 tmux 但代码完整） |
+| 35 | `e2b` | `services/e2b.py` | seam + 占位 provider（惰性 `get_sandbox()` 首次就绪 + 超时/销毁回收；SDK 延迟导入，缺 SDK/账号仅在使用时报错） |
+| 36 | `web` 家族 | `services/web.py` + `web_fetch_http.py` + `web_search_deepseek.py` + `web_search_exa.py` + `web_search_perplexity.py` + `plugins/tool_web.py` | `ctx.web` seam（fetch/search 共 seam、执行期选择、`maxResults` 封顶）+ HTTP 抓取 provider（同源重定向、字节/字符/超时上限）+ 三搜索 provider（缺 key 仅不可用）+ `web_search`/`web_fetch` 工具（HTML 深度守卫 512、markdownify 懒加载、截断脚注） |
+| 37 | `skill` 家族 | `services/scope.py`（**dsh-scope 移植**）+ `services/skill.py` + `skill_filesystem.py` + `skill_watch.py` + `skill_badge.py` + `plugins/tool_skill.py` | `ctx.skills` 分层注册表（provider 合并/rank 裁决/collect 缓存/`skills/change` 通知）+ filesystem provider（pathlib 发现 + frontmatter 解析 + 可选 watchdog）+ 内置 dsh-badge + `skill` 工具（会话目录 `skill-catalog` 来源 + `/name` 手势 `skill-invocation` 注入） |
+| 38 | `workspace` | `services/workspace.py` + `workspace_registry.py` | `ctx.workspaceRegistry` 耐久注册表：`workspace` 域（workspaces 表 + global 状态）+ 一次性历史引导（按规范 cwd 分组会话、最晚活动优先）+ create（canonical 路径复用/非目录拒绝）/delete（保留目录与日志）/insert_before 排序/归档集 + 实体（attach 头部 cwd 校验、哨兵中止 no-op 写、status） |
+| 39 | `preset` | `services/agent_presets/`（7 模块）+ `plugins/persona.py` | `ctx.agentPresets`：发现（每调用重读根 + 组合健康检查：缺组合/坏 YAML → broken 行）+ 创作（user 根限定整目录复制/删除/读取）+ 常驻挂载（单飞 + mtime/size 戳换代 + 加入 = scope 父链绑定/重链）+ `resolve_session_preset` + `persona` 可组合行（scope-only 遮蔽部署人格） |
+| 40 | `interaction` 家族 | `services/commands.py` + `user_approval.py` + `user_questions.py` + `permission_presets.py` + `plugins/tool_ask_user.py` | `ctx.commands` 斜杠命令注册表（ScopedLayers 分层遮蔽 + `parseCommand` + execute 的 `command/run`↔`command/done` 生命周期 + `commands/change` 通知）+ `ctx.approval` 批准服务（`approval/policy` 折叠 + `approval/asked`↔`approval/decided` 审计对 + never 确定性拒绝/fail-closed/信号撤回 + systemPrompt policy 片段）+ `ctx.userQuestions` 提问 seam（唯一 provider + CALLER_NOT_LIVE/DELEGATED_CALLER/BAD_INTENT 校验）+ `ctx.permissionPresets` 权限预设（沙箱/批准旋钮捆绑 + `permissions` 投影单元 + `/permission` 命令 + 会话初始钉定）+ `ask_user_question` 工具 |
 
-### 8.3 未做（约 5 个 + 收尾）
+### 8.3 新落地六包（代码已写，**未做运行时验证 / 单测**）
 
-| 包 | 原因 |
+> **决策背景（2026-08-27）**：此前误判 `code-runtime`/`sandbox`/`lsp`/`acp`/`tmux-context`「依赖外部基础设施不可写」。经核对 dsh 源码确认——它们与 `process`/`shell`/`fs` 同构，可按既有「seam + 本地后端 + 占位」范式落地，**只有 `e2b` 真正需要账号与 SDK**（已写 seam + 占位 provider）。用户拍板：**「遵照 dsh 源码，先把代码写出来，能不能跑先不管」**。
+
+据此六包已按 dsh 对应 TS 模块逐函数翻译为 Python，**全部通过 `py_compile`**，但**尚未做 mock 单测与运行时验证**（即不保证端到端可跑，仅保证语法/类型与结构对齐）。验收前需补的测试见 §12。
+
+### 8.4 收尾 / 未做（真正依赖外部集成）
+
+| 包 / 项 | 原因 |
 | --- | --- |
-| `code-runtime` / `sandbox` / `e2b` | 沙箱执行，依赖外部基础设施（Docker / e2b 云服务） |
-| `lsp` | 语言服务器协议，需真实 LSP 服务器 |
-| `acp` / `acp-agent` | Agent 通信协议，依赖 typert/跨进程成熟度 |
-| `tmux-context` | 依赖 tmux 二进制，Windows 不可用 |
-| 第 4 层 `host` / 跨语言 client 完整版 | 应用层收尾集成 |
+| `e2b` 适配器 `fs-e2b` / `subprocess-e2b` | 需 e2b 账号 + 官方 SDK，仅占位 seam 已落地 |
+| `acp-agent`（ACP 协议入口）/ 跨语言 client 完整版 | 依赖真实客户端 SDK 与 typert 跨进程成熟度 |
+| 第 4 层 `host`（聚合宿主） | 应用层收尾集成 |
+| 六包 mock 单测 | 用户拍板暂缓（仅 `py_compile` 校验，未补 `test_*`） |
 
 ---
 
@@ -518,8 +560,39 @@ for t in dsh_py/tests/test_*.py; do python "$t"; done
 | **workflow 内部事件** | `internal/dispatch` 拦截 | 改为公开事件 + InvariantError 响亮传播 |
 | **goal-round-driver** | `ctx.agents.get/list`、`withoutInitiator`、`agent/error` | 用 `ctx.agentLoop.get/roots` + `agent/status` 事件跟踪；无 initiator 概念省略对应钩子 |
 | **Windows 环境** | — | 子进程类测试退出期可能有良性管道 GC 噪声（`test_mcp_client` 等，退出码 0） |
+| **code-runtime 隔离** | Node `worker_threads` 隔离线程 + RPC 管道 | `multiprocessing` 进程隔离（替 worker_threads）；失败分类（exception/timeout/abort/worker-exit/invalid-output/output-limit）作结果字段非拒绝 |
+| **sandbox 后端** | bwrap/landlock（Linux）/ seatbelt（macOS） | 同构后端占位 + Windows-ACL 占位，fail-closed（需真实 sandbox 二进制才生效） |
+| **lsp 光标坐标** | 1 基 UTF-16 光标 | 模型侧工具 1 基→0 基转换，内部零基 UTF-16 |
+| **acp 协议** | typert 远程作用域 | stdio newline JSON-RPC 服务端（方法面与 dsh 一致）；事件桥接复用本地 `ctx` 事件总线 |
+| **tmux-context** | dsh 用 `ctx.shell.resolve/run` | 改用本地 `ctx.shell.execute()`（返回 `{exit_code, stdout}`）+ `ctx.on("agent/pre-step", prepend=True)` + `MessageSource(kind="plugin", plugin="tmux-context")` |
+| **e2b 就绪时机** | 同步打开沙箱客户端 | 惰性 `get_sandbox()` 首次创建就绪 future（避免同步构造触碰事件循环）；SDK 延迟导入 |
+| **web 传输** | 浏览器 `fetch` + `TextDecoder` | 懒加载 `httpx.AsyncClient`（超时/重定向/尺寸上限语义对齐）；`bytes.decode` 承担解码（未知 charset → `WEB_UNSUPPORTED_CONTENT_TYPE`） |
+| **web 取消** | `AbortSignal` 事件竞速 | 检查点 `throw_if_aborted` + `asyncio.CancelledError` → `WEB_ABORTED`（fetch 用 `asyncio.timeout` 区分 `WEB_FETCH_TIMEOUT`） |
+| **tool-web 展示层** | `defineTool` output schema / render / presentationMeta / presentCall / presentResult（UI 卡片） | dsh_py 工具契约无展示层：handler 直接返回模型可见文本（`formatSearchOutput` / `formatFetchOutput`），卡片/meta 省略 |
+| **HTML→Markdown** | turndown + GFM 插件（含防 colspan 表规则） | 懒加载 `markdownify`（缺依赖/转换失败降级原样返回）；词法深度守卫 512 1:1 移植 |
+| **DeepSeek 搜索请求记录** | `agents.currentInitiator()?.session` | dsh_py 无 initiator 概念：写入首个活跃根 agent 的会话（无则跳过，观测性） |
+| **settings 区 schema** | schemastery `Config` 默认值 | `install_settings_section` 沿用，schema 置 None（默认值在 apply 侧补全） |
+| **scope 子系统** | Cordis `ctx.plugin` + `ctx.extend({symbol})` 铸造作用域、`scopeTarget` 事件载波 | `create_scope` = `ctx.extend()` + 实例属性打标；`scopeTarget`/`carrierKeyOf`（事件层专用）未移植；`ScopedLayers.effect` 改为「立即 action + fiber 清理 + 立即 notify」 |
+| **skill 取消** | `AbortSignal` 事件竞速（`waitWithAbort`） | 检查点 `throw_if_aborted`（无 promise 竞速，文档化） |
+| **skill frontmatter** | `yaml` 包完整解析 | 优先懒加载 `yaml`，缺失/失败回退极简映射解析器（扁平标量 + 内联 metadata，零依赖妥协） |
+| **skill 监视** | chokidar（祖先模式/双探针/稳定阈值） | 懒加载 `watchdog`（目录已存在才监视，任意事件触发失效）；缺依赖降级不监视；默认 `watch=False`；dsh_py 无 `fs/observed` 事件，宿主变更观测 no-op |
+| **tool-skill 目录/手势** | `defineTool` 输出 schema + `MessageSourceMap` 合并 | dsh_py 工具契约无输出 schema（handler 返回 `render_skill_content` 文本）；`MessageSource` 扩展 `name`/`entries`/`update` 字段承载 `skill-invocation`/`skill-catalog` 来源；`tools.get(name, agent)` 身份比较 → `tools.has(name)` |
+| **workspace 生命周期** | `Service.init` 异步初始化钩子 | 显式 `async start()`（插件 apply 以 `create_task` 调度）；未就绪前 `require_*` 抛错、异步入口 `await _when_ready()` |
+| **workspace 路径规范** | `fs.realpath`（缺失抛 ENOENT） | `os.path.realpath` 从不抛——`create` 补存在性检查以对齐「原错误拒绝」 |
+| **workspace 会话索引** | `sessions.list()` 返回 Session 对象 | dsh_py 返回 **id 列表**——逐个 `get(id)` 取 header |
+| **workspace 表更新 no-op** | fn 原样返回 current 触发哨兵中止写槽 | dsh_py `update` 无条件写——以**哨兵异常**中止（不落盘不事件，调用方捕获吞掉） |
+| **preset 组合装载** | cordis `Include`/`EntryTree` + 未激活行/泄漏服务审计 | dsh_py `load_profile` 直接装载（缺失 inject 即整体拒绝——审计由 loader 承担）；无 isolate 领域 → 泄漏审计天然满足；组合行 `{name, config}` → `{"plugin", config}`，group 行扁平化 |
+| **preset 事件/告警** | `agent/created` 告警监听 + reflect.store 服务读取 | dsh_py 无 `agent/created`（省略告警）；`service_for` 退化在 agent ctx 链上尽力解析 |
+| **preset 注册表可见性** | scope 父链 + per-fiber 服务存储，常驻挂载注册对加入的 agent 可见 | dsh_py 工具/提示/技能注册表全局——预设行注册即全 agent 可见；预设服务落在常驻作用域 ctx（沿父链可见） |
+| **preset 依赖** | js-yaml | 懒加载 **PyYAML**（已装入隔离 venv）；缺失时组合判 broken 并注明 |
+| **commands 远程面** | `TypertRemoteService` + `@Remote`（list/execute） | 继承 `Service` + `@remote` 打标（dsh_py typert 为独立注册表 + 元数据装饰器）；Wire 形态不变 |
+| **commands 通知** | `events.dispatch` 逐个隔离 + promise 捕获 | `ctx.emit("commands/change")`（dsh_py 事件分发本就逐个隔离，非否决） |
+| **approval 分发** | `scopeTarget(this, req.agent)` 作用域过滤瀑布流 | dsh_py 无 scope 事件载波 → 普通 `ctx.waterfall("approval/request", ...)`，监听器按 `req.agent` 属性自行过滤 |
+| **approval 消息注入** | `agent.inject(createUserMessage(...))` | `agent.session.append("user/message", create_user_message(...))`（无 inject 入口） |
+| **permission-presets 沙箱默认** | `ctx.shell.sandboxMode`（executor 能力）+ 静态 `inject=['shell','approval','sessions']` | dsh_py shell 无该属性 → `Config.sandboxDefault`（默认 workspace-write）；装配处仍 fail-loud 检查三服务 |
+| **permission-presets 初始钉定** | `session/created` 事件监听 + 遍历既有 | dsh_py 无 `session/created` → 构造时遍历 + 公开 `pinInitialPermission` 供装配方调用 |
 
-**依赖**：`pyproject.toml` 仅声明 `httpx` 为必需依赖；`zstandard`（sqlite 可选压缩）、`websockets`（Web 网关）为应用层依赖；测试依赖（`pytest`）放在可选 `dev` 分组（测试本体不依赖 pytest）。
+**依赖**：`pyproject.toml` 仅声明 `httpx` 为必需依赖；`zstandard`（sqlite 可选压缩）、`websockets`（Web 网关）、`PyYAML`（agent-presets 组合解析，懒加载）为应用层依赖；测试依赖（`pytest`）放在可选 `dev` 分组（测试本体不依赖 pytest）。
 
 ---
 
@@ -527,8 +600,17 @@ for t in dsh_py/tests/test_*.py; do python "$t"; done
 
 ### 近期
 
-- [ ] 第 3 层剩余包评估：`code-runtime` / `sandbox` / `e2b`（需 Docker/云沙箱）、`lsp`（需真实 LSP 服务器）、`acp`（依赖 typert/跨进程成熟度）、`tmux-context`（Windows 不可用）
-- [ ] 第 4 层收尾：`acp-agent`（ACP 协议入口）、`host`（聚合宿主）、跨语言 client 完整版
+- [~] 第 3 层剩余六包代码已按 dsh 源码落地（`code-runtime`/`sandbox`/`lsp`/`acp`/`tmux-context`/`e2b`），均通过 `py_compile`，**未做运行时验证与单测**（用户拍板「先把代码写出来，能不能跑先不管」）
+- [X] **`web` 家族落地**（`ctx.web` seam + web-fetch-http + DeepSeek/Exa/Perplexity 搜索 + tool-web 两工具）：纯函数 42 项冒烟 + 装配（拓扑排序/工具注册）已验证；传输/搜索需 `httpx` 与对应 API key
+- [X] **`skill` 家族落地**（先移植 `dsh-scope` 子系统 → `ctx.skills` 分层注册表 + filesystem/badge provider + tool-skill 工具/目录/手势）：纯函数 19 项 + 装配 6 项冒烟已验证；frontmatter 优先懒 yaml、监视需可选 `watchdog`
+- [X] **`workspace` 落地**（`ctx.workspaceRegistry` 耐久工作区注册表：workspace 域 + 历史引导 + 实体成员校验）：端到端 31 项冒烟已验证（fake storageDomain/persistence 环境）
+- [X] **`preset` 落地**（`ctx.agentPresets` 预设注册表 + `persona` 行：发现/健康/创作/常驻挂载/加入与重链/会话解析）：端到端 28 项冒烟已验证；组合解析依赖 **PyYAML**（已装入隔离 venv）
+- [X] **`interaction` 家族落地**（`ctx.commands` 命令注册表 + `ctx.approval` 批准服务 + `ctx.userQuestions` 提问 seam + `ctx.permissionPresets` 权限预设 + `ask_user_question` 工具）：纯函数 + 端到端 **90 项冒烟已验证**（含 lifecycle 审计对、fail-closed、策略折叠、投影/命令装配）
+- [ ] 六包补 mock 单元测试（`test_code_runtime`/`test_sandbox`/`test_lsp`/`test_acp`/`test_tmux_context`/`test_e2b`，复用既有 fake ctx/shell 范式）—— 用户拍板暂缓
+- [ ] `web`/`skill`/`workspace`/`preset`/`interaction` 家族补 `test_web`/`test_skill`/`test_tool_skill`/`test_workspace`/`test_agent_presets`/`test_interaction` 模块（复用冒烟用例）—— 用户拍板暂缓
+- [ ] `e2b` 适配器 `fs-e2b`/`subprocess-e2b`（需 e2b 账号 + SDK）
+- [ ] interaction 的 web 侧 UI 适配器（`/permission` 弹窗 / 命令面板 / user-questions provider / approval answerer）—— seam 已备齐（`ctx.commands`/`ctx.approval`/`ctx.userQuestions`/`ctx.permissionPresets`），属第 4 层 UI 集成工作
+- [ ] 第 4 层收尾：`acp-agent`（ACP 协议入口）、`host`（聚合宿主/桌面 UI）、跨语言 client 完整版
 - [ ] 遥测 / session-telemetry-otel（attribution 强制头已落地，剩采集与导出）
 - [ ] 完整 Web 应用（gateway 已有常驻雏形，缺完整前端/鉴权）
 

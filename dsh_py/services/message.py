@@ -80,6 +80,11 @@ class MessageSource:
     baseline: Optional[bool] = None   # 是否为完整基线（区别于后期 delta）
     baselineIdentity: str = ""        # 发现/优先级/预算身份，用于 resume 校验
     changes: tuple = ()               # AgentInstructionChange 列表：{action, scope, path, digest?}
+    # kind=='skill-invocation' 时的技能名（用户显式 /name 调用注入的正文来源）
+    name: str = ""                    # 被调用的技能名（kebab-case）
+    # kind=='skill-catalog' 时的目录发布条目（{name, description} 列表）与替换标记
+    entries: tuple = ()               # 本次发布的确切条目，按目录顺序
+    update: Optional[bool] = None     # 是否为替换目录（区别于本会话首次发布）
 
 
 # --------------------------------------------------------------------------- #
