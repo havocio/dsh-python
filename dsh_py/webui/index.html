@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek Harness</title>
+<style>
+/* ── dsh 设计 token（浓缩自 client/ui-theme design-platform.css） ── */
+:root {
+  --dsw-static-neutral-bluish-00: #ffffff;
+  --dsw-static-neutral-bluish-50: #f9fafb;
+  --dsw-static-neutral-bluish-60: #f5f6f7;
+  --dsw-static-neutral-bluish-75: #f1f3f5;
+  --dsw-static-neutral-bluish-100: #ebeeF2;
+  --dsw-static-neutral-bluish-150: #e9ecf2;
+  --dsw-static-neutral-bluish-200: #e1e5ee;
+  --dsw-static-neutral-bluish-300: #cfd3d6;
+  --dsw-static-neutral-bluish-400: #adb2b8;
+  --dsw-static-neutral-bluish-500: #979da6;
+  --dsw-static-neutral-bluish-600: #81858c;
+  --dsw-static-neutral-bluish-700: #61666b;
+  --dsw-static-neutral-bluish-750: #43454a;
+  --dsw-static-neutral-bluish-800: #353638;
+  --dsw-static-neutral-bluish-850: #2c2c2e;
+  --dsw-static-neutral-bluish-900: #1b1b1c;
+  --dsw-static-neutral-bluish-950: #151517;
+  --dsw-static-neutral-bluish-1000: #0f1115;
+  --dsw-static-deepseek-50: #edf3fe;
+  --dsw-static-deepseek-100: #e4edfd;
+  --dsw-static-deepseek-200: #d3e2ff;
+  --dsw-static-deepseek-300: #b7c8fe;
+  --dsw-static-deepseek-400: #679efe;
+  --dsw-static-deepseek-450: #5686fe;
+  --dsw-static-deepseek-500: #4176e6;
+  --dsw-static-deepseek-600: #4868b2;
+  --dsw-static-deepseek-800: #34415b;
+  --dsw-static-deepseek-900: #283142;
+  --dsw-static-red-600: #d92d20;
+  --dsw-static-red-400: #f04438;
+  --dsw-static-green-500: #12b76a;
+  --dsw-static-green-400: #32d583;
+  --dsw-static-green-100: #d3f8df;
+  --dsw-static-amber-500: #f79009;
+  --dsw-static-amber-400: #fdb022;
+  --dsw-static-amber-100: #fef0c7;
+  /* alias */
+  --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-60);
+  --dsw-alias-bg-layer-3: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-bg-overlay: var(--dsw-static-neutral-bluish-150);
+  --dsw-alias-label-primary: var(--dsw-static-neutral-bluish-1000);
+  --dsw-alias-label-primary-bluish: var(--dsw-static-neutral-bluish-1000);
+  --dsw-alias-label-secondary: var(--dsw-static-neutral-bluish-700);
+  --dsw-alias-label-tertiary: var(--dsw-static-neutral-bluish-600);
+  --dsw-alias-label-dimmed: var(--dsw-static-neutral-bluish-200);
+  --dsw-alias-label-caption: var(--dsw-static-neutral-bluish-400);
+  --dsw-alias-border: var(--dsw-static-neutral-bluish-150);
+  --dsw-alias-button-primary-fill: var(--dsw-static-deepseek-500);
+  --dsw-alias-button-primary-hover: var(--dsw-static-deepseek-600);
+  --dsw-alias-button-ghost-hover: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-interactive-hover: rgba(38, 49, 72, 0.06);
+  --dsw-alias-interactive-active: rgba(38, 49, 72, 0.1);
+  --dsw-alias-state-success-primary: var(--dsw-static-green-500);
+  --dsw-alias-state-warn-primary: var(--dsw-static-amber-500);
+  --dsw-alias-state-error-primary: var(--dsw-static-red-600);
+  --dsw-alias-markdown-code: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-markdown-inline-code: var(--dsw-static-neutral-bluish-100);
+  --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --dsw-font-mono: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", monospace;
+  /* 布局固定点（对齐 ui-layout columns.ts） */
+  --sidebar-w: 280px;
+  --sidebar-collapsed: 56px;
+  --details-w: 360px;
+  --radius: 8px;
+  --radius-sm: 6px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  font-family: var(--dsw-font-family);
+  -webkit-font-smoothing: antialiased;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  overflow: hidden;
+}
+button, input, select, textarea { font-family: inherit; }
+
+/* ── 三栏 AppFrame（对齐 dsh ui-layout） ─────────────── */
+#app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--details-w);
+  height: 100vh;
+  transition: grid-template-columns 0.18s ease;
+}
+#app.sidebar-collapsed { grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr) var(--details-w); }
+#app.details-collapsed { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0; }
+#app.sidebar-collapsed.details-collapsed { grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr) 0; }
+
+/* ── 侧栏 ─────────────────────────────────────────── */
+#sidebar {
+  display: flex; flex-direction: column;
+  background: var(--dsw-static-neutral-bluish-50);
+  border-right: 1px solid var(--dsw-alias-border);
+  min-width: 0; overflow: hidden;
+}
+#app.sidebar-collapsed #sidebar { align-items: center; }
+.logoRow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 12px 10px;
+}
+.logoRow .logo {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: linear-gradient(135deg, var(--dsw-static-deepseek-500), var(--dsw-static-deepseek-450));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 800; font-size: 13px; flex-shrink: 0;
+}
+.logoRow .title { font-size: 14px; font-weight: 600; white-space: nowrap; }
+#app.sidebar-collapsed .logoRow .title { display: none; }
+
+.icon-btn {
+  border: none; background: transparent; color: var(--dsw-alias-label-secondary);
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px; flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--dsw-alias-interactive-hover); }
+
+.newSessionBtn {
+  margin: 4px 12px 8px; padding: 8px 12px;
+  background: var(--dsw-alias-button-primary-fill); color: #fff;
+  border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;
+  cursor: pointer; text-align: left; white-space: nowrap; overflow: hidden;
+}
+.newSessionBtn:hover { background: var(--dsw-alias-button-primary-hover); }
+#app.sidebar-collapsed .newSessionBtn { width: 32px; padding: 8px 0; text-align: center; }
+#app.sidebar-collapsed .newSessionBtn span { display: none; }
+
+.nav {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 4px 8px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  font-size: 13px; color: var(--dsw-alias-label-secondary);
+  cursor: pointer; border: none; background: transparent; text-align: left;
+  white-space: nowrap; overflow: hidden;
+}
+.nav-item:hover { background: var(--dsw-static-neutral-bluish-75); }
+.nav-item.active { background: var(--dsw-static-neutral-bluish-100); color: var(--dsw-alias-label-primary); font-weight: 500; }
+#app.sidebar-collapsed .nav-item { justify-content: center; padding: 7px 0; }
+#app.sidebar-collapsed .nav-item .nav-label { display: none; }
+.nav-item .nav-ico { width: 18px; text-align: center; flex-shrink: 0; }
+
+.sidebar-region {
+  flex: 1; overflow-y: auto; padding: 8px; border-top: 1px solid var(--dsw-alias-border);
+  min-height: 0;
+}
+#app.sidebar-collapsed .sidebar-region { display: none; }
+.region-head {
+  font-size: 11px; color: var(--dsw-alias-label-caption);
+  padding: 4px 6px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.ws-item {
+  padding: 7px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; color: var(--dsw-alias-label-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ws-item:hover { background: var(--dsw-static-neutral-bluish-75); }
+.ws-item .ws-path { font-family: var(--dsw-font-mono); font-size: 11.5px; color: var(--dsw-alias-label-caption); }
+
+.sidebar-foot {
+  padding: 10px 12px; border-top: 1px solid var(--dsw-alias-border);
+  display: flex; align-items: center; gap: 8px;
+}
+#app.sidebar-collapsed .sidebar-foot { flex-direction: column; padding: 8px 0; }
+.foot-label { font-size: 12px; color: var(--dsw-alias-label-tertiary); flex: 1; white-space: nowrap; overflow: hidden; }
+#app.sidebar-collapsed .foot-label { display: none; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.ready { background: var(--dsw-static-green-500); }
+.status-dot.connecting { background: var(--dsw-static-amber-500); animation: pulse 1s infinite; }
+.status-dot.closed { background: var(--dsw-static-red-600); }
+@keyframes pulse { 50% { opacity: 0.3; } }
+
+/* ── 中栏：对话 ───────────────────────────────────── */
+#center { display: flex; flex-direction: column; min-width: 0; background: var(--dsw-alias-bg-base); }
+#center .center-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--dsw-alias-border);
+  font-size: 13px; color: var(--dsw-alias-label-secondary);
+}
+#center .center-bar .session-id { font-family: var(--dsw-font-mono); font-size: 12px; color: var(--dsw-alias-label-caption); }
+#center .center-bar .spacer { flex: 1; }
+#center .center-bar .badge {
+  font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border); color: var(--dsw-alias-label-tertiary);
+}
+#center .center-bar .badge.running { color: var(--dsw-static-deepseek-600); border-color: var(--dsw-static-deepseek-200); background: var(--dsw-static-deepseek-50); }
+
+#messages {
+  flex: 1; overflow-y: auto; padding: 24px 28px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.turn-group { display: flex; flex-direction: column; }
+.turn-sep {
+  display: flex; align-items: center; gap: 10px; margin: 14px 0 8px;
+  color: var(--dsw-alias-label-caption); font-size: 11px;
+}
+.turn-sep::before, .turn-sep::after { content: ""; flex: 1; height: 1px; background: var(--dsw-alias-border); }
+.msg { display: flex; gap: 12px; padding: 8px 0; }
+.msg .avatar {
+  width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+}
+.msg.user .avatar { background: var(--dsw-static-deepseek-500); color: #fff; }
+.msg.assistant .avatar { background: var(--dsw-static-neutral-bluish-100); color: var(--dsw-alias-label-primary); }
+.msg .body { flex: 1; min-width: 0; }
+.msg .who { font-size: 12px; font-weight: 600; margin-bottom: 3px; color: var(--dsw-alias-label-secondary); }
+.msg.assistant .who { color: var(--dsw-alias-label-primary); }
+.msg .content { font-size: 14px; line-height: 1.7; word-break: break-word; }
+.msg .content:empty::after { content: "…"; color: var(--dsw-alias-label-caption); }
+.msg .meta { font-size: 11px; color: var(--dsw-alias-label-caption); margin-top: 4px; font-family: var(--dsw-font-mono); }
+
+/* 内容块（markdown / 命令卡片 / 工具卡片） */
+.content code {
+  font-family: var(--dsw-font-mono); font-size: 12.5px;
+  background: var(--dsw-alias-markdown-inline-code); padding: 1px 5px; border-radius: 4px;
+}
+.content pre {
+  background: var(--dsw-alias-markdown-code); border: 1px solid var(--dsw-alias-border);
+  border-radius: var(--radius); padding: 12px 14px; overflow-x: auto;
+  margin: 6px 0; font-size: 12.5px; line-height: 1.6;
+}
+.content pre code { background: none; padding: 0; }
+.content h1, .content h2, .content h3 { margin: 10px 0 5px; line-height: 1.3; }
+.content h1 { font-size: 17px; } .content h2 { font-size: 16px; } .content h3 { font-size: 15px; }
+.content ul, .content ol { padding-left: 22px; margin: 4px 0; }
+.content a { color: var(--dsw-static-deepseek-500); }
+.content table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
+.content th, .content td { border: 1px solid var(--dsw-alias-border); padding: 5px 10px; }
+.content th { background: var(--dsw-static-neutral-bluish-50); font-weight: 600; }
+.content .err { color: var(--dsw-static-red-600); }
+.content blockquote { border-left: 3px solid var(--dsw-static-deepseek-300); padding-left: 10px; color: var(--dsw-alias-label-tertiary); margin: 6px 0; }
+
+.card {
+  border: 1px solid var(--dsw-alias-border); border-radius: var(--radius);
+  background: var(--dsw-static-neutral-bluish-50); padding: 10px 14px; margin: 6px 0;
+  font-size: 13px;
+}
+.card .card-title { font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.card .card-sub { color: var(--dsw-alias-label-caption); font-size: 11.5px; font-family: var(--dsw-font-mono); }
+.card.err { border-left: 3px solid var(--dsw-static-red-600); }
+
+/* 输入区（对齐 dsh input） */
+#composer {
+  display: flex; gap: 10px; align-items: flex-end;
+  padding: 14px 20px 16px; border-top: 1px solid var(--dsw-alias-border);
+}
+#composer .input-shell {
+  flex: 1; border: 1px solid var(--dsw-alias-border); border-radius: var(--radius);
+  background: var(--dsw-static-neutral-bluish-50); padding: 4px 6px;
+  display: flex; align-items: flex-end;
+}
+#composer .input-shell:focus-within { border-color: var(--dsw-static-deepseek-500); box-shadow: 0 0 0 3px var(--dsw-static-deepseek-100); }
+#composer textarea {
+  flex: 1; resize: none; border: none; outline: none; background: transparent;
+  font-size: 14px; line-height: 1.6; padding: 7px 8px; min-height: 40px; max-height: 160px;
+  color: var(--dsw-alias-label-primary);
+}
+#composer textarea:disabled { opacity: 0.5; }
+.btn {
+  border: 1px solid var(--dsw-alias-border); background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary); border-radius: var(--radius-sm);
+  padding: 8px 16px; font-size: 13px; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s;
+}
+.btn:hover { background: var(--dsw-static-neutral-bluish-75); }
+.btn.primary { background: var(--dsw-alias-button-primary-fill); border-color: transparent; color: #fff; }
+.btn.primary:hover { background: var(--dsw-alias-button-primary-hover); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── 右侧 details 栏 ─────────────────────────────── */
+#details {
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  background: var(--dsw-alias-bg-base); border-left: 1px solid var(--dsw-alias-border);
+}
+#app.details-collapsed #details { display: none; }
+.details-tabs { display: flex; border-bottom: 1px solid var(--dsw-alias-border); padding: 0 8px; }
+.details-tab {
+  padding: 9px 12px; font-size: 12.5px; color: var(--dsw-alias-label-tertiary);
+  cursor: pointer; border: none; background: none; border-bottom: 2px solid transparent;
+}
+.details-tab.active { color: var(--dsw-alias-label-primary); font-weight: 600; border-bottom-color: var(--dsw-static-deepseek-500); }
+.details-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
+
+.ev { border-left: 3px solid var(--dsw-alias-border); padding: 4px 10px; margin-bottom: 6px; border-radius: 0 4px 4px 0; font-size: 11.5px; }
+.ev .ev-head { color: var(--dsw-alias-label-tertiary); font-family: var(--dsw-font-mono); }
+.ev .ev-head .t { color: var(--dsw-static-deepseek-500); font-weight: 600; }
+.ev .ev-body { color: var(--dsw-alias-label-caption); white-space: pre-wrap; word-break: break-all; margin-top: 2px; font-family: var(--dsw-font-mono); font-size: 11px; }
+.ev.running { border-left-color: var(--dsw-static-amber-500); }
+.ev.idle { border-left-color: var(--dsw-static-green-500); }
+.ev.error { border-left-color: var(--dsw-static-red-600); }
+
+/* 面板（目标/技能/工作区/jobs/设置） */
+.panel-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.panel-title .count { font-size: 11px; background: var(--dsw-static-deepseek-100); color: var(--dsw-static-deepseek-600); border-radius: 999px; padding: 0 7px; }
+.panel-empty { color: var(--dsw-alias-label-caption); font-size: 12.5px; padding: 18px 0; text-align: center; }
+.panel-item {
+  border: 1px solid var(--dsw-alias-border); border-radius: var(--radius);
+  padding: 10px 12px; margin-bottom: 8px; cursor: pointer; background: var(--dsw-alias-bg-base);
+}
+.panel-item:hover { border-color: var(--dsw-static-deepseek-300); }
+.panel-item .pi-title { font-size: 13px; font-weight: 600; }
+.panel-item .pi-desc { font-size: 12px; color: var(--dsw-alias-label-tertiary); margin-top: 2px; line-height: 1.5; }
+.panel-item .pi-meta { font-size: 11px; color: var(--dsw-alias-label-caption); margin-top: 4px; font-family: var(--dsw-font-mono); }
+.panel-item .pi-content { font-size: 12px; color: var(--dsw-alias-label-secondary); margin-top: 6px; white-space: pre-wrap; max-height: 140px; overflow-y: auto; }
+.svc-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 5px 0; }
+.svc-row .dot { width: 7px; height: 7px; border-radius: 50%; }
+.svc-row .on .dot { background: var(--dsw-static-green-500); }
+.svc-row .off .dot { background: var(--dsw-static-neutral-bluish-300); }
+.svc-row .svc-name { font-family: var(--dsw-font-mono); color: var(--dsw-alias-label-secondary); }
+
+/* ── 命令面板 Modal（对齐 dsh Modal） ────────────── */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(21, 21, 23, 0.45);
+  display: none; align-items: flex-start; justify-content: center; z-index: 40;
+  padding-top: 12vh;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  width: 560px; max-width: 92vw; max-height: 60vh; display: flex; flex-direction: column;
+  background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,0.16); overflow: hidden;
+}
+.modal-head { padding: 12px 14px; border-bottom: 1px solid var(--dsw-alias-border); }
+.modal-head input {
+  width: 100%; border: none; outline: none; font-size: 14px; background: transparent;
+  color: var(--dsw-alias-label-primary);
+}
+.modal-body { overflow-y: auto; padding: 6px; }
+.cmd-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
+}
+.cmd-item:hover { background: var(--dsw-static-neutral-bluish-75); }
+.cmd-item.active { background: var(--dsw-static-deepseek-100); }
+.cmd-item .cmd-name { font-family: var(--dsw-font-mono); font-weight: 600; color: var(--dsw-static-deepseek-600); }
+.cmd-item .cmd-desc { color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-foot { padding: 8px 14px; border-top: 1px solid var(--dsw-alias-border); font-size: 11px; color: var(--dsw-alias-label-caption); display: flex; gap: 14px; }
+
+/* ── 连接浮层 / toast ────────────────────────────── */
+#overlay {
+  position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.85); z-index: 50;
+}
+#overlay.show { display: flex; }
+#overlay .card {
+  background: var(--dsw-alias-bg-base); border: 1px solid var(--dsw-alias-border); border-radius: 12px;
+  padding: 26px 30px; text-align: center; max-width: 380px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.1);
+}
+#overlay .card h2 { font-size: 15px; margin-bottom: 8px; }
+#overlay .card p { font-size: 12.5px; color: var(--dsw-alias-label-tertiary); margin-bottom: 14px; line-height: 1.6; }
+#overlay .card input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--dsw-alias-border); border-radius: 6px;
+  font-family: var(--dsw-font-mono); font-size: 12.5px; margin-bottom: 12px; outline: none;
+}
+#overlay .card input:focus { border-color: var(--dsw-static-deepseek-500); }
+.toast {
+  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+  background: var(--dsw-static-neutral-bluish-850); color: #fff;
+  font-size: 12.5px; padding: 8px 16px; border-radius: 999px;
+  opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 60;
+}
+.toast.show { opacity: 1; }
+
+/* 滚动条（对齐 dsh scrollbar.css 语义） */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--dsw-static-neutral-bluish-200); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dsw-static-neutral-bluish-300); }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 侧栏 -->
+  <aside id="sidebar">
+    <div class="logoRow">
+      <div class="logo">d</div>
+      <div class="title">DeepSeek Harness</div>
+      <div class="spacer" style="flex:1"></div>
+      <button class="icon-btn" id="toggle-sidebar" title="折叠侧栏">◀</button>
+    </div>
+    <button class="newSessionBtn" id="new-session"><span>＋ 新建会话</span><span style="display:none">＋</span></button>
+    <nav class="nav">
+      <button class="nav-item active" data-panel="conversation"><span class="nav-ico">💬</span><span class="nav-label">对话</span></button>
+      <button class="nav-item" data-panel="goals"><span class="nav-ico">🎯</span><span class="nav-label">目标</span></button>
+      <button class="nav-item" data-panel="skills"><span class="nav-ico">🧩</span><span class="nav-label">技能</span></button>
+      <button class="nav-item" data-panel="workspaces"><span class="nav-ico">📁</span><span class="nav-label">工作区</span></button>
+      <button class="nav-item" data-panel="jobs"><span class="nav-ico">⚙️</span><span class="nav-label">任务</span></button>
+      <button class="nav-item" data-panel="settings"><span class="nav-ico">⚙️</span><span class="nav-label">设置</span></button>
+    </nav>
+    <div class="sidebar-region">
+      <div class="region-head">工作区</div>
+      <div id="ws-list"><div class="panel-empty" style="padding:8px 0">（未连接）</div></div>
+    </div>
+    <div class="sidebar-foot">
+      <span class="status-dot closed" id="conn-dot"></span>
+      <span class="foot-label" id="conn-text">未连接</span>
+      <button class="icon-btn" id="toggle-details" title="折叠详情">▶</button>
+    </div>
+  </aside>
+
+  <!-- 中栏：对话 -->
+  <section id="center">
+    <div class="center-bar">
+      <span class="session-id" id="session-label">—</span>
+      <div class="spacer"></div>
+      <span class="badge" id="agent-badge" style="display:none">idle</span>
+      <button class="btn" id="open-command-palette" style="padding:5px 10px;font-size:12px">命令…</button>
+    </div>
+    <div id="messages"></div>
+    <div id="composer">
+      <div class="input-shell">
+        <textarea id="input" rows="1" placeholder="发送消息（Enter 发送，Shift+Enter 换行；输入 / 打开命令）" disabled></textarea>
+      </div>
+      <button class="btn primary" id="send" disabled>发送</button>
+    </div>
+  </section>
+
+  <!-- 右侧 details -->
+  <aside id="details">
+    <div class="details-tabs">
+      <button class="details-tab active" data-tab="events">事件</button>
+      <button class="details-tab" data-tab="panels">面板</button>
+    </div>
+    <div class="details-body" id="details-events">
+      <div id="events-list"></div>
+    </div>
+    <div class="details-body" id="details-panels" style="display:none">
+      <div id="panel-root"></div>
+    </div>
+  </aside>
+</div>
+
+<!-- 命令面板 -->
+<div class="modal-overlay" id="cmd-overlay">
+  <div class="modal">
+    <div class="modal-head"><input id="cmd-input" placeholder="输入命令名过滤，Enter 执行…" autocomplete="off"></div>
+    <div class="modal-body" id="cmd-list"></div>
+    <div class="modal-foot"><span>↑↓ 选择 · Enter 执行 · Esc 关闭</span><span id="cmd-hint" style="margin-left:auto"></span></div>
+  </div>
+</div>
+
+<!-- 连接浮层 / toast -->
+<div id="overlay">
+  <div class="card">
+    <h2>连接到网关</h2>
+    <p>输入 dsh_py 网关地址（例如 <span style="font-family:var(--dsw-font-mono)">ws://127.0.0.1:8080/ws</span>）</p>
+    <input id="ws-url" placeholder="ws://127.0.0.1:8080/ws">
+    <button class="btn primary" id="connect-btn" style="width:100%">连接</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ═══════════════════ 状态 ═══════════════════ */
+const state = {
+  ws: null, pending: new Map(), reqSeq: 0,
+  sessionId: null, connected: false, running: false,
+  assistantEl: null, assistantTurn: null, lastTurn: null, assistantText: "",
+  reconnectAttempts: 0,
+  cmdIndex: 0, cmdFiltered: [],
+  services: null,
+};
+const $ = (id) => document.getElementById(id);
+
+/* ═══════════════════ 工具 ═══════════════════ */
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function nowTime() {
+  return new Date().toLocaleTimeString("zh-CN", { hour12: false });
+}
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+/* markdown 轻渲染（含表格；代码块占位保护） */
+function renderMarkdown(src) {
+  const text = String(src);
+  const blocks = [];
+  let body = text.replace(/```([\s\S]*?)```/g, (m) => {
+    blocks.push('<pre><code>' + esc(m.slice(3, -3).replace(/^\n/, "")) + "</code></pre>");
+    return "\u0000" + (blocks.length - 1) + "\u0000";
+  });
+  body = esc(body);
+  body = body.replace(/`([^`\n]+)`/g, (m, c) => "<code>" + c + "</code>");
+  body = body.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  body = body.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  body = body.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+  body = body.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+  body = body.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+  body = body.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  body = body.replace(/^- (.*)$/gm, "<li>$1</li>");
+  body = body.replace(/^\|(.+)\|$/gm, (m) => "<div class=\"card\">" + m + "</div>");
+  body = body.replace(/^&gt; (.*)$/gm, "<blockquote>$1</blockquote>");
+  body = body.replace(/\n/g, "<br>");
+  body = body.replace(/\u0000(\d+)\u0000/g, (m, i) => blocks[Number(i)]);
+  return body;
+}
+
+/* ═══════════════════ 消息区 ═══════════════════ */
+function addMessage(role, html, meta) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const avatar = document.createElement("div");
+  avatar.className = "avatar";
+  avatar.textContent = role === "user" ? "你" : "A";
+  const body = document.createElement("div");
+  body.className = "body";
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = role === "user" ? "你" : "Assistant";
+  const content = document.createElement("div");
+  content.className = "content";
+  content.innerHTML = html || "";
+  body.appendChild(who);
+  body.appendChild(content);
+  if (meta) {
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = meta;
+    body.appendChild(m);
+  }
+  wrap.appendChild(avatar);
+  wrap.appendChild(body);
+  $("messages").appendChild(wrap);
+  scrollBottom();
+  return content;
+}
+function scrollBottom() {
+  const box = $("messages");
+  box.scrollTop = box.scrollHeight;
+}
+function appendAssistantText(text) {
+  if (!text) return;
+  if (!state.assistantEl || state.assistantTurn !== state.lastTurn) {
+    const meta = state.lastTurn ? "turn " + state.lastTurn : undefined;
+    state.assistantEl = addMessage("assistant", "", meta);
+    state.assistantTurn = state.lastTurn;
+    state.assistantText = "";
+  }
+  state.assistantText += text;
+  state.assistantEl.innerHTML = renderMarkdown(state.assistantText);
+  scrollBottom();
+}
+function addCard(html, err) {
+  const el = addMessage("assistant", '<div class="card' + (err ? " err" : "") + '">' + html + "</div>");
+  state.assistantEl = null;
+  state.assistantText = "";
+  return el;
+}
+function finalizeTurn(meta) {
+  state.assistantEl = null;
+  state.assistantText = "";
+  state.assistantTurn = null;
+}
+
+/* ═══════════════════ 事件流 ═══════════════════ */
+function addEvent(kind, title, detail) {
+  const item = document.createElement("div");
+  item.className = "ev " + kind;
+  const head = document.createElement("div");
+  head.className = "ev-head";
+  head.innerHTML = '<span class="t">' + esc(title) + "</span> " + nowTime();
+  item.appendChild(head);
+  if (detail) {
+    const body = document.createElement("div");
+    body.className = "ev-body";
+    body.textContent = detail;
+    item.appendChild(body);
+  }
+  $("events-list").appendChild(item);
+  while ($("events-list").children.length > 400) $("events-list").removeChild($("events-list").firstChild);
+  $("events-list").scrollTop = $("events-list").scrollHeight;
+}
+
+/* ═══════════════════ 通知处理 ═══════════════════ */
+function handleNotification(method, params) {
+  if (method === "session.status") {
+    const status = params.status || "idle";
+    state.running = status === "running";
+    const badge = $("agent-badge");
+    badge.style.display = "inline-flex";
+    badge.className = "badge " + (state.running ? "running" : "");
+    badge.textContent = status;
+    addEvent(status === "running" ? "running" : "idle", method, JSON.stringify(params));
+    if (!state.running) refreshPanels();
+    return;
+  }
+  if (method === "session.event") {
+    const ev = params.event || {};
+    addEvent("", method, JSON.stringify(params).slice(0, 500));
+    handleSessionEvent(ev);
+    return;
+  }
+  addEvent("", method, JSON.stringify(params));
+}
+
+function handleSessionEvent(ev) {
+  const type = ev.type || "";
+  const data = ev.data || {};
+  if (type === "assistant/chunk") {
+    const chunk = data.chunk || {};
+    if (chunk.type === "text-delta" && chunk.text) appendAssistantText(chunk.text);
+    return;
+  }
+  if (type === "assistant/message") {
+    const content = (data.message && data.message.content) || [];
+    const text = content
+      .filter((b) => (b.__block__ === "text" || b.type === "text"))
+      .map((b) => b.text || "")
+      .join("");
+    appendAssistantText(text);
+    return;
+  }
+  if (type === "tool/start" || type === "tool/call") {
+    const name = data.toolName || data.name || "";
+    if (name) addCard('<span class="card-title">🔧 ' + esc(name) + "</span>");
+    return;
+  }
+  if (type === "turn/start") {
+    state.lastTurn = (state.assistantTurn ?? 0) + 1;
+    return;
+  }
+  if (type === "turn/end") {
+    const reason = (data.reason && data.reason.kind) || "end_turn";
+    if (state.assistantEl) {
+      const meta = state.assistantEl.parentNode.querySelector(".meta");
+      if (meta) meta.textContent += " · " + reason + " · " + nowTime();
+    }
+    finalizeTurn();
+    return;
+  }
+  if (type === "agent/error" || (data.reason && data.reason.kind === "error")) {
+    addCard('<span class="err">⚠ ' + esc(data.error ? data.error.message || String(data.error) : "运行出错") + "</span>", true);
+    return;
+  }
+  if (type === "message/error") {
+    addCard('<span class="err">⚠ ' + esc(data.error ? data.error.message || String(data.error) : "消息错误") + "</span>", true);
+    return;
+  }
+}
+
+/* ═══════════════════ 连接 / RPC ═══════════════════ */
+function setConn(kind, label) {
+  const dot = $("conn-dot");
+  dot.className = "status-dot " + kind;
+  $("conn-text").textContent = label;
+}
+function rpc(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error("连接未就绪"));
+      return;
+    }
+    const id = "req_" + (++state.reqSeq);
+    state.pending.set(id, { resolve, reject });
+    state.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }));
+  });
+}
+function connect(url) {
+  if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+  state.pending.clear();
+  setConn("connecting", "连接中…");
+  $("overlay").classList.remove("show");
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) {
+    setConn("closed", "地址无效"); showOverlay(url); return;
+  }
+  state.ws = ws;
+  ws.onopen = async () => {
+    setConn("connecting", "握手…");
+    try {
+      await rpc("initialize", { cwd: "/" });
+      if (!state.sessionId) newSession();
+      state.services = null;
+      setConn("ready", "已连接");
+      state.reconnectAttempts = 0;
+      enableComposer(true);
+      refreshPanels();
+      toast("已连接网关");
+    } catch (e) {
+      setConn("closed", "握手失败");
+      toast("握手失败：" + e.message);
+      showOverlay(url);
+    }
+  };
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch (err) { return; }
+    if (!msg) return;
+    if (msg.id !== undefined && msg.id !== null) {
+      const p = state.pending.get(String(msg.id));
+      if (p) {
+        state.pending.delete(String(msg.id));
+        if (msg.error) p.reject(new Error(msg.error.message || "JSON-RPC error"));
+        else p.resolve(msg.result);
+      }
+      return;
+    }
+    if (msg.method) handleNotification(msg.method, msg.params || {});
+  };
+  ws.onclose = () => {
+    state.pending.clear();
+    setConn("closed", "已断开");
+    enableComposer(false);
+    if (state.connected) toast("连接已断开");
+    scheduleReconnect(url);
+  };
+  ws.onerror = () => {};
+  state.connected = true;
+}
+function scheduleReconnect(url) {
+  if (state.reconnectAttempts >= 3) { showOverlay(url); return; }
+  const delay = Math.min(2000 * Math.pow(2, state.reconnectAttempts), 8000);
+  state.reconnectAttempts += 1;
+  setTimeout(() => {
+    if (!state.ws || state.ws.readyState === WebSocket.CLOSED) {
+      setConn("connecting", "重连 " + state.reconnectAttempts + "…");
+      connect(url);
+    }
+  }, delay);
+}
+function showOverlay(url) {
+  $("ws-url").value = url || $("ws-url").value || "ws://127.0.0.1:8080/ws";
+  $("overlay").classList.add("show");
+}
+function enableComposer(on) {
+  $("input").disabled = !on;
+  $("send").disabled = !on;
+  if (on) $("input").focus();
+}
+
+/* ═══════════════════ 会话 ═══════════════════ */
+function newSession() {
+  if (state.running) { toast("当前回合运行中"); return; }
+  state.sessionId = "webui-" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  $("session-label").textContent = state.sessionId;
+  $("messages").innerHTML = "";
+  $("events-list").innerHTML = "";
+  state.assistantEl = null;
+  state.assistantText = "";
+  state.lastTurn = null;
+  addMessage("assistant", '<span style="color:var(--dsw-alias-label-caption)">会话已就绪，发送消息开始对话。</span>');
+}
+async function sendPrompt() {
+  const input = $("input");
+  const text = input.value.trim();
+  if (!text) return;
+  if (state.running) { toast("上一回合仍在运行"); return; }
+  input.value = "";
+  input.style.height = "auto";
+  addMessage("user", renderMarkdown(text), nowTime());
+  scrollBottom();
+  try {
+    const res = await rpc("session/prompt", {
+      sessionId: state.sessionId,
+      contentBlocks: [{ type: "text", text }],
+    });
+    addEvent("", "session/prompt → " + (res && res.messageId), "");
+  } catch (e) {
+    addCard("⚠ 发送失败：" + esc(e.message), true);
+  }
+}
+
+/* ═══════════════════ 命令面板 ═══════════════════ */
+let commandCache = [];
+async function openCommandPalette() {
+  $("cmd-overlay").classList.add("show");
+  $("cmd-input").value = "";
+  $("cmd-input").focus();
+  state.cmdIndex = 0;
+  commandCache = [];
+  try {
+    const res = await rpc("console/commands/list", { sessionId: state.sessionId });
+    if (res && res.available) {
+      commandCache = (res.commands || []).map((c) => "/" + c.name);
+      $("cmd-hint").textContent = commandCache.length + " 条命令";
+    } else {
+      $("cmd-hint").textContent = "命令服务未装配（--patch 加 commands 插件）";
+    }
+  } catch (e) {
+    $("cmd-hint").textContent = "加载失败：" + e.message;
+  }
+  renderCommandList("");
+}
+function renderCommandList(filter) {
+  state.cmdFiltered = commandCache.filter((c) => c.includes(filter.toLowerCase()));
+  const box = $("cmd-list");
+  box.innerHTML = "";
+  if (!state.cmdFiltered.length) {
+    box.innerHTML = '<div class="panel-empty">无匹配命令</div>';
+    return;
+  }
+  state.cmdFiltered.forEach((c, i) => {
+    const item = document.createElement("div");
+    item.className = "cmd-item" + (i === state.cmdIndex ? " active" : "");
+    item.innerHTML = '<span class="cmd-name">' + esc(c) + "</span>";
+    item.onclick = () => executeCommand(c);
+    box.appendChild(item);
+  });
+  const active = box.querySelector(".active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+async function executeCommand(line) {
+  $("cmd-overlay").classList.remove("show");
+  if (state.running) { toast("当前回合运行中"); return; }
+  addMessage("user", '<code style="font-family:var(--dsw-font-mono)">' + esc(line) + "</code>", nowTime());
+  try {
+    const res = await rpc("console/commands/execute", { sessionId: state.sessionId, line });
+    if (res && res.available && res.executed) {
+      addCard('<span class="card-title">命令 /' + esc(res.name) + "</span>" +
+        (res.text ? '<div class="content" style="margin-top:6px">' + renderMarkdown(res.text) + "</div>" : "（无输出）"),
+        !!res.isError);
+    } else if (res && res.available) {
+      addCard('<span class="card-title">未命中</span><span class="card-sub">' + esc(line) + "</span>");
+    } else {
+      addCard("命令服务未装配（--patch 加 commands 插件）", true);
+    }
+  } catch (e) {
+    addCard("命令执行失败：" + esc(e.message), true);
+  }
+}
+
+/* ═══════════════════ 面板 ═══════════════════ */
+const PANEL_RENDERERS = {
+  conversation: () => {},
+  goals: renderGoalsPanel,
+  skills: renderSkillsPanel,
+  workspaces: renderWorkspacesPanel,
+  jobs: renderJobsPanel,
+  settings: renderSettingsPanel,
+};
+let currentPanel = "conversation";
+
+function panelShell(title, count) {
+  return '<div class="panel-title">' + title + (count ? '<span class="count">' + count + "</span>" : "") + "</div>";
+}
+
+/* 面板不可用引导：缺服务时提示装配方式（--patch），避免“点了没反应” */
+function panelUnavailable(seam, extra) {
+  return '<div class="panel-empty">服务未装配 —— 面板不可用</div>' +
+    '<div class="card" style="font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:1.7">' +
+    "对应后端 seam：<code>" + esc(seam) + "</code>。启动网关时用 <code>--patch</code> 装配即可点亮，例如：<br>" +
+    '<code style="font-size:11.5px">python -m dsh_py.gateway --port 8080 --mock --webui --patch 你的profile.py</code>' +
+    (extra ? "<br>" + extra : "") + "</div>";
+}
+async function refreshPanels() {
+  if (!state.connected) return;
+  const fn = PANEL_RENDERERS[currentPanel];
+  if (fn) fn();
+  if (currentPanel === "workspaces") renderWorkspaceSidebar();
+  loadInfo();
+}
+async function loadInfo() {
+  try {
+    const res = await rpc("console/info");
+    if (res) state.services = res.services || {};
+  } catch (e) { /* 忽略 */ }
+}
+function svcDot(name) {
+  const on = state.services && state.services[name];
+  return '<div class="svc-row ' + (on ? "on" : "off") + '"><span class="dot"></span><span class="svc-name">' + name + "</span></div>";
+}
+async function renderGoalsPanel() {
+  const root = $("panel-root");
+  root.innerHTML = panelShell("目标");
+  try {
+    const res = await rpc("console/goals/get", { sessionId: state.sessionId });
+    if (!res || !res.available) { root.innerHTML += panelUnavailable('ctx.goals', 'profile 里加 `apply_goal` 与 `command_goal` 插件。'); return; }
+    const g = res.goal;
+    if (!g) { root.innerHTML += '<div class="panel-empty">当前无目标</div>'; return; }
+    root.innerHTML += '<div class="panel-item"><div class="pi-title">' + esc(g.title || g.name || "(未命名)") + "</div>" +
+      (g.details ? '<div class="pi-desc">' + esc(String(g.details)) + "</div>" : "") +
+      '<div class="pi-meta">state: ' + esc(g.state || "") + " · id: " + esc(g.id || "") + "</div></div>";
+  } catch (e) {
+    root.innerHTML += '<div class="panel-empty">' + esc(e.message) + "</div>";
+  }
+}
+async function renderSkillsPanel() {
+  const root = $("panel-root");
+  root.innerHTML = panelShell("技能");
+  try {
+    const res = await rpc("console/skills/list");
+    if (!res || !res.available) { root.innerHTML += panelUnavailable('ctx.skills', 'profile 里加 `apply_skill` / `apply_skill_fs` / `apply_skill_badge`。'); return; }
+    const skills = res.skills || [];
+    if (!skills.length) { root.innerHTML += '<div class="panel-empty">无技能</div>'; return; }
+    root.innerHTML += '<div class="panel-title" style="margin-top:4px"><span>发现 ' + skills.length + " 个</span></div>";
+    for (const s of skills) {
+      const item = document.createElement("div");
+      item.className = "panel-item";
+      item.innerHTML = '<div class="pi-title">' + esc(s.name) + "</div>" +
+        (s.description ? '<div class="pi-desc">' + esc(s.description) + "</div>" : "") +
+        '<div class="pi-meta">' + esc(s.source || "") + "</div>";
+      item.onclick = async () => {
+        try {
+          const d = await rpc("console/skills/get", { name: s.name });
+          if (d && d.skill) {
+            item.innerHTML += '<div class="pi-content">' + esc((d.skill.content || "").slice(0, 1200)) + "</div>";
+          }
+        } catch (e) { /* 忽略 */ }
+      };
+      root.appendChild(item);
+    }
+  } catch (e) {
+    root.innerHTML += '<div class="panel-empty">' + esc(e.message) + "</div>";
+  }
+}
+async function renderWorkspacesPanel() {
+  const root = $("panel-root");
+  root.innerHTML = panelShell("工作区");
+  try {
+    const res = await rpc("console/workspaces/list");
+    if (!res || !res.available) { root.innerHTML += panelUnavailable('ctx.workspaceRegistry', 'profile 里加 storage 系列 + `apply_session_persistence` + `apply_workspace`。'); return; }
+    const ws = res.workspaces || [];
+    if (!ws.length) { root.innerHTML += '<div class="panel-empty">无工作区</div>'; return; }
+    for (const w of ws) {
+      root.innerHTML += '<div class="panel-item"><div class="pi-title">' + esc(w.title || w.path) + "</div>" +
+        '<div class="pi-meta">' + esc(w.path) + "</div>" +
+        '<div class="pi-meta">' + (w.sessionIds || []).length + " 个会话</div></div>";
+    }
+  } catch (e) {
+    root.innerHTML += '<div class="panel-empty">' + esc(e.message) + "</div>";
+  }
+}
+async function renderWorkspaceSidebar() {
+  const box = $("ws-list");
+  try {
+    const res = await rpc("console/workspaces/list");
+    if (!res || !res.available || !(res.workspaces || []).length) {
+      box.innerHTML = '<div class="panel-empty" style="padding:8px 0">（无工作区）</div>';
+      return;
+    }
+    box.innerHTML = "";
+    for (const w of res.workspaces) {
+      const item = document.createElement("div");
+      item.className = "ws-item";
+      item.innerHTML = '<div>' + esc(w.title || w.path.split(/[\\/]/).pop() || w.path) + '</div><div class="ws-path">' + esc(w.path) + "</div>";
+      box.appendChild(item);
+    }
+  } catch (e) {
+    box.innerHTML = '<div class="panel-empty" style="padding:8px 0">（加载失败）</div>';
+  }
+}
+async function renderJobsPanel() {
+  const root = $("panel-root");
+  root.innerHTML = panelShell("后台任务");
+  try {
+    const res = await rpc("console/jobs/list");
+    if (!res || !res.available) { root.innerHTML += panelUnavailable('ctx.jobs', 'profile 里加 `apply_jobs`。'); return; }
+    const jobs = res.jobs || [];
+    if (!jobs.length) { root.innerHTML += '<div class="panel-empty">无任务</div>'; return; }
+    for (const j of jobs) {
+      root.innerHTML += '<div class="panel-item"><div class="pi-title">' + esc(j.command || j.kind) + "</div>" +
+        '<div class="pi-meta">' + esc(j.id) + " · " + esc(j.status) + " · " + esc(j.kind) + "</div></div>";
+    }
+  } catch (e) {
+    root.innerHTML += '<div class="panel-empty">' + esc(e.message) + "</div>";
+  }
+}
+function renderSettingsPanel() {
+  const root = $("panel-root");
+  root.innerHTML = panelShell("设置");
+  root.innerHTML += '<div class="panel-title" style="margin-top:6px"><span>服务可用性</span></div>';
+  const names = ["commands", "goals", "skills", "workspaceRegistry", "jobs", "planMode", "sessions", "agents", "settings", "credentials"];
+  root.innerHTML += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 14px">' + names.map(svcDot).join("") + "</div>";
+  root.innerHTML += '<div class="panel-empty">网关：' + esc($("conn-text").textContent) + "</div>";
+}
+
+/* ═══════════════════ 事件绑定 ═══════════════════ */
+function showDetailsTab(which) {
+  document.querySelectorAll(".details-tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === which));
+  $("details-events").style.display = which === "events" ? "" : "none";
+  $("details-panels").style.display = which === "panels" ? "" : "none";
+}
+
+document.querySelectorAll(".nav-item").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentPanel = btn.dataset.panel;
+    if (currentPanel === "conversation") {
+      // 对话视图：右侧回到事件流
+      $("panel-root").innerHTML = "";
+      showDetailsTab("events");
+    } else {
+      // 业务面板：自动切到右侧「面板」tab 并渲染
+      showDetailsTab("panels");
+      PANEL_RENDERERS[currentPanel]();
+    }
+  });
+});
+document.querySelectorAll(".details-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const which = tab.dataset.tab;
+    showDetailsTab(which);
+    if (which === "panels" && !$("panel-root").innerHTML) PANEL_RENDERERS[currentPanel]();
+  });
+});
+$("toggle-sidebar").addEventListener("click", () => {
+  $("app").classList.toggle("sidebar-collapsed");
+  $("toggle-sidebar").textContent = $("app").classList.contains("sidebar-collapsed") ? "▶" : "◀";
+});
+$("toggle-details").addEventListener("click", () => {
+  $("app").classList.toggle("details-collapsed");
+  $("toggle-details").textContent = $("app").classList.contains("details-collapsed") ? "◀" : "▶";
+});
+$("connect-btn").addEventListener("click", () => {
+  const url = $("ws-url").value.trim();
+  if (url) connect(url);
+});
+$("ws-url").addEventListener("keydown", (e) => { if (e.key === "Enter") $("connect-btn").click(); });
+$("send").addEventListener("click", sendPrompt);
+$("new-session").addEventListener("click", newSession);
+$("open-command-palette").addEventListener("click", openCommandPalette);
+$("cmd-overlay").addEventListener("click", (e) => { if (e.target === $("cmd-overlay")) $("cmd-overlay").classList.remove("show"); });
+$("cmd-input").addEventListener("input", (e) => { state.cmdIndex = 0; renderCommandList(e.target.value); });
+$("cmd-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    const line = state.cmdFiltered[state.cmdIndex];
+    if (line) executeCommand(line);
+    else if (e.target.value.trim()) executeCommand(e.target.value.trim());
+  } else if (e.key === "ArrowDown") {
+    state.cmdIndex = Math.min(state.cmdIndex + 1, state.cmdFiltered.length - 1);
+    renderCommandList(e.target.value);
+  } else if (e.key === "ArrowUp") {
+    state.cmdIndex = Math.max(state.cmdIndex - 1, 0);
+    renderCommandList(e.target.value);
+  } else if (e.key === "Escape") {
+    $("cmd-overlay").classList.remove("show");
+  }
+});
+const input = $("input");
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); openCommandPalette(); }
+});
+
+/* ══ 启动：解析默认地址，自动连接 ══ */
+(function init() {
+  const host = location.hostname || "127.0.0.1";
+  const port = location.port || "8080";
+  const scheme = location.protocol === "https:" ? "wss://" : "ws://";
+  const url = scheme + host + ":" + port + "/ws";
+  $("ws-url").value = url;
+  connect(url);
+})();
+</script>
+</body>
+</html>

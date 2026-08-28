@@ -243,7 +243,170 @@ async def serve_stdio(server: "AcpServer") -> None:
                 sys.stdout.flush()
 
 
+class AcpClientConnection:
+    """ACP 客户端连接：在子进程 stdio 管道对上做换行分隔 JSON-RPC（客户端方向）。
+
+    与 :class:`AcpServer`（服务端，读系统 stdin）相对——本类把 asyncio
+    StreamReader/StreamWriter 当作对端 ACP agent 进程的管道：发送
+    ``initialize``/``sessions/new``/``prompt``/``cancel`` 请求（id 配对），
+    接收服务端响应与两种通知：
+
+    - ``session/update`` → 转交 ``on_session_update`` 回调（subagent-acp 用它
+      收集 ``agent_message_chunk`` 文本）；
+    - ``request/permission`` → 按 ``permission`` 策略**自动应答**（不向人类
+      展示任何提示）：``allow`` 选首个 ``allow_once``/``allow_always`` 选项，
+      否则应答 ``cancelled`` 让子代理不继续。
+
+    读循环常驻后台；对端关闭流或主动 :meth:`close` 后结束。
+    """
+
+    def __init__(
+        self,
+        reader: Any,
+        writer: Any,
+        *,
+        on_session_update: Any = None,
+        permission: str = "reject",
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._on_session_update = on_session_update
+        self._permission = permission
+        self._next_id = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._closed = False
+        self._read_task = asyncio.create_task(self._read_loop())
+
+    async def _request(self, method: str, params: Any) -> Any:
+        """发一个请求并等待配对响应；读循环异常以 RuntimeError 拒绝。"""
+        if self._closed:
+            raise RuntimeError("acp client connection is closed")
+        self._next_id += 1
+        msg_id = self._next_id
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[msg_id] = future
+        payload = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or {}}
+        try:
+            self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await self._writer.drain()
+        except Exception as exc:  # noqa: BLE001 - 写失败即请求失败
+            self._pending.pop(msg_id, None)
+            raise RuntimeError(f"acp client write failed: {exc}") from exc
+        return await future
+
+    async def initialize(self, client_capabilities: Any = None,
+                         protocol_version: str = "2025-05-01") -> dict:
+        """ACP 握手：声明协议版本与**空**客户端能力（子代理自给自足）。"""
+        result = await self._request("initialize", {
+            "protocolVersion": protocol_version,
+            "clientCapabilities": client_capabilities or {},
+        })
+        return result or {}
+
+    async def new_session(self, cwd: str, mcp_servers: Any = None) -> dict:
+        """在子代理侧建立会话；返回 ``{"sessionId": ...}``。"""
+        result = await self._request("sessions/new", {
+            "cwd": cwd,
+            "mcpServers": mcp_servers or [],
+        })
+        return result or {}
+
+    async def prompt(self, session_id: str, prompt: list) -> dict:
+        """跑一轮提示；返回含 ``stopReason`` 的结果。"""
+        result = await self._request("prompt", {"sessionId": session_id, "prompt": prompt})
+        return result or {}
+
+    async def cancel(self, session_id: str) -> None:
+        """尽力而为地取消子代理当前回合（进程回收仍由调用方负责）。"""
+        await self._request("cancel", {"sessionId": session_id})
+
+    def _dispatch(self, msg: dict) -> None:
+        """分派一行 JSON：响应（带 id）结算 pending；通知走回调/自动应答。"""
+        if "id" in msg:
+            future = self._pending.pop(msg.get("id"), None)
+            if future is None or future.done():
+                return
+            if "error" in msg:
+                error = msg["error"] or {}
+                future.set_exception(RuntimeError(str(error.get("message") or "acp error")))
+            else:
+                future.set_result(msg.get("result"))
+            return
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method == "session/update":
+            callback = self._on_session_update
+            if callback is not None:
+                try:
+                    callback(params)
+                except Exception:  # noqa: BLE001 - 消费者回调不得中断读循环
+                    pass
+        elif method == "request/permission":
+            self._answer_permission(params)
+
+    def _answer_permission(self, params: dict) -> None:
+        """自动应答权限请求：allow → 首个可用选项；否则 cancelled。"""
+        request_id = params.get("requestId")
+        if request_id is None:
+            return
+        outcome: dict = {"outcome": "cancelled"}
+        if self._permission == "allow":
+            for option in params.get("options") or []:
+                if option.get("kind") in ("allow_once", "allow_always"):
+                    outcome = {"outcome": "selected", "optionId": option.get("optionId")}
+                    break
+        try:
+            self._writer.write((json.dumps({
+                "jsonrpc": "2.0", "id": request_id,
+                "result": {"outcome": outcome},
+            }) + "\n").encode("utf-8"))
+        except Exception:  # noqa: BLE001 - 应答尽力而为
+            pass
+
+    async def _read_loop(self) -> None:
+        """后台读循环：逐行解析 ndjson，直到对端关闭流。"""
+        try:
+            while True:
+                line = await self._reader.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(msg, dict):
+                    self._dispatch(msg)
+        except (asyncio.CancelledError, asyncio.IncompleteReadError):  # noqa: PERF203
+            pass
+        except Exception:  # noqa: BLE001 - 流异常终止视同对端关闭
+            pass
+        finally:
+            closed_by_us = self._closed
+            self._closed = True
+            if not closed_by_us:
+                # 对端主动关闭：在途请求以明确错误结算（未检索异常即时消费）。
+                exc = RuntimeError("acp child closed its protocol stream")
+                for future in list(self._pending.values()):
+                    if not future.done():
+                        future.set_exception(exc)
+                self._pending.clear()
+
+    async def close(self) -> None:
+        """主动关闭：取消读循环与全部在途请求（幂等、不抛）。"""
+        self._closed = True
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.cancel()
+        self._pending.clear()
+        if not self._read_task.done():
+            self._read_task.cancel()
+            try:
+                await self._read_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+
 __all__ = [
-    "AcpServer", "acp_prompt_to_text", "prompt_has_unsupported_content",
-    "turn_end_to_stop_reason", "serve_stdio",
+    "AcpServer", "AcpClientConnection", "acp_prompt_to_text",
+    "prompt_has_unsupported_content", "turn_end_to_stop_reason", "serve_stdio",
 ]

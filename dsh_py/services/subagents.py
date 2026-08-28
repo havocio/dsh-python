@@ -178,10 +178,21 @@ class SubagentRuntime(Service):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__(ctx, "subagents")
         self._providers: dict[str, SubagentProvider] = {}
+        self._backends: dict[str, Callable[[dict], SubagentRun]] = {}
 
     def register_provider(self, provider: SubagentProvider) -> None:
         """注册一个具名 provider（重复名覆盖）。"""
         self._providers[provider.name] = provider
+
+    def register_backend(self, name: str, backend: Callable[[dict], Any]) -> None:
+        """注册一个具名**外进程/外部**后端（重复名覆盖）。
+
+        :param name: 路由名（与 provider 名一致）。
+        :param backend: ``async callable(config) -> SubagentRun``——自行 spawn
+            外部进程并发布句柄（如 subagent-acp 的 ACP 子代理驱动）；``start``
+            命中时优先于进程内 ``_run_child`` 路径。
+        """
+        self._backends[name] = backend
 
     def get_provider(self, name: str) -> Optional[SubagentProvider]:
         """按名取 provider；未注册返回 None。"""
@@ -201,6 +212,10 @@ class SubagentRuntime(Service):
         registered = self._providers.get(provider)
         if registered is None:
             raise WorkflowError(f'no subagent provider registered for "{provider}"', "AGENT_START")
+        # 外进程 backend 优先：命中时由 backend 自行发布句柄（含进程回收）。
+        backend = self._backends.get(provider)
+        if backend is not None:
+            return await backend(config)
         sub_session = self.ctx.sessions.create()
         task = asyncio.create_task(self._run_child(sub_session, config, registered))
         signal = config.get("signal")

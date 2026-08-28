@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from typing import Any, Callable, Optional
 
 from dsh_py.core.context import AppContext
@@ -167,7 +168,173 @@ class HarnessSdkJsonRpcServer:
             return await self.prompt(params)
         if method == "shutdown":
             return await self.shutdown()
+        # console.* —— 浏览器前端方法面（消费已落地 seam；缺服务返回 available:false）
+        if method == "console/info":
+            return await self._console_info()
+        if method == "console/commands/list":
+            return await self._console_commands_list(params)
+        if method == "console/commands/execute":
+            return await self._console_commands_execute(params)
+        if method == "console/goals/get":
+            return await self._console_goals_get(params)
+        if method == "console/skills/list":
+            return await self._console_skills_list()
+        if method == "console/skills/get":
+            return await self._console_skills_get(params)
+        if method == "console/workspaces/list":
+            return await self._console_workspaces_list()
+        if method == "console/jobs/list":
+            return await self._console_jobs_list()
+        if method == "console/plan/get":
+            return await self._console_plan_get(params)
         raise RuntimeError(f"unknown DeepSeek Harness SDK runtime method: {method}")
+
+    # ------------------------------------------------------------------ #
+    # console.*：浏览器前端面板（只读 + 轻执行；缺 seam 返回 available:false）
+    # ------------------------------------------------------------------ #
+    async def _console_info(self) -> dict:
+        """服务可用性清单——前端据此显示/隐藏面板。"""
+        names = [
+            "commands", "goals", "skills", "workspaceRegistry", "jobs",
+            "planMode", "sessions", "agents", "settings", "credentials",
+        ]
+        services = {
+            name: bool(self.ctx.has_service(name)) for name in names
+        }
+        return {
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "services": services,
+        }
+
+    async def _agent_for(self, params: dict) -> Any:
+        """取绑定会话的 agent：sessionId 在册用其 agent；否则惰性建一个
+        console 会话（对齐 dsh 前端“主会话”语义）。"""
+        session_id = str(params.get("sessionId") or "")
+        if session_id and session_id in self._records:
+            return self._records[session_id]["agent"]
+        record = await self._get_or_create_session(session_id or f"console-{uuid.uuid4().hex[:12]}")
+        return record["agent"]
+
+    async def _console_commands_list(self, params: dict) -> dict:
+        if not self.ctx.has_service("commands"):
+            return {"available": False}
+        agent = await self._agent_for(params)
+        commands = self.ctx.commands.list(agent)
+        return {"available": True, "commands": [
+            {
+                "name": c.name,
+                "description": getattr(c, "description", ""),
+                "recordInput": bool(getattr(c, "recordInput", True)),
+            }
+            for c in commands
+        ]}
+
+    async def _console_commands_execute(self, params: dict) -> dict:
+        if not self.ctx.has_service("commands"):
+            return {"available": False}
+        agent = await self._agent_for(params)
+        from dsh_py.core.signal import CancelSignal
+
+        line = str(params.get("line") or "")
+        execution = await self.ctx.commands.execute(agent, line, CancelSignal())
+        if execution is None:
+            return {"available": True, "executed": False}
+        return {
+            "available": True,
+            "executed": True,
+            "name": getattr(execution, "name", ""),
+            "text": getattr(getattr(execution, "result", None), "text", "") or "",
+            "isError": bool(getattr(getattr(execution, "result", None), "isError", False)),
+        }
+
+    async def _console_goals_get(self, params: dict) -> dict:
+        if not self.ctx.has_service("goals"):
+            return {"available": False}
+        agent = await self._agent_for(params)
+        try:
+            goal = self.ctx.goals.get(agent)
+        except Exception:  # noqa: BLE001 - 未激活/异常 agent 按无目标
+            goal = None
+        return {"available": True, "goal": goal}
+
+    async def _console_skills_list(self) -> dict:
+        if not self.ctx.has_service("skills"):
+            return {"available": False}
+        try:
+            entries = await self.ctx.skills.list({})
+        except Exception as exc:  # noqa: BLE001
+            return {"available": True, "error": str(exc), "skills": []}
+        return {"available": True, "skills": [
+            {
+                "name": s.name,
+                "description": getattr(s, "description", ""),
+                "source": getattr(s, "source", ""),
+            }
+            for s in entries
+        ]}
+
+    async def _console_skills_get(self, params: dict) -> dict:
+        if not self.ctx.has_service("skills"):
+            return {"available": False}
+        name = str(params.get("name") or "")
+        try:
+            skill = await self.ctx.skills.get(name, {})
+        except Exception as exc:  # noqa: BLE001
+            return {"available": True, "error": str(exc), "skill": None}
+        if skill is None:
+            return {"available": True, "skill": None}
+        return {
+            "available": True,
+            "skill": {
+                "name": skill.name,
+                "description": getattr(skill, "description", ""),
+                "content": getattr(skill, "content", ""),
+            },
+        }
+
+    async def _console_workspaces_list(self) -> dict:
+        if not self.ctx.has_service("workspaceRegistry"):
+            return {"available": False}
+        try:
+            entities = self.ctx.workspaceRegistry.list()
+        except Exception as exc:  # noqa: BLE001
+            return {"available": True, "error": str(exc), "workspaces": []}
+        return {"available": True, "workspaces": [
+            {
+                "id": str(getattr(w, "id", "")),
+                "path": getattr(w, "path", ""),
+                "title": getattr(w, "title", "") or "",
+                "sessionIds": list(getattr(w, "session_ids", []) or []),
+            }
+            for w in entities
+        ]}
+
+    async def _console_jobs_list(self) -> dict:
+        if not self.ctx.has_service("jobs"):
+            return {"available": False}
+        try:
+            jobs = self.ctx.jobs.list()
+        except Exception as exc:  # noqa: BLE001
+            return {"available": True, "error": str(exc), "jobs": []}
+        return {"available": True, "jobs": [
+            {
+                "id": str(getattr(j, "id", "")),
+                "kind": getattr(j, "kind", ""),
+                "status": getattr(j, "status", ""),
+                "command": getattr(j, "command", ""),
+            }
+            for j in jobs
+        ]}
+
+    async def _console_plan_get(self, params: dict) -> dict:
+        if not self.ctx.has_service("planMode"):
+            return {"available": False}
+        agent = await self._agent_for(params)
+        try:
+            plan = self.ctx.planMode.get(agent)
+        except Exception:  # noqa: BLE001
+            plan = {}
+        return {"available": True, "plan": plan}
 
     # ------------------------------------------------------------------ #
     # 会话管理

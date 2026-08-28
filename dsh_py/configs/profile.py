@@ -44,6 +44,8 @@ from dsh_py.plugins.long_term_memory import apply as apply_memory
 # from dsh_py.services.user_questions import apply as apply_user_questions
 # from dsh_py.services.permission_presets import apply as apply_permission_presets  # 需 shell+approval+sessions
 # from dsh_py.plugins.tool_ask_user import apply as apply_tool_ask_user  # 需 tools+userQuestions
+# ── subagent-acp（外进程 ACP 子代理；取消注释启用）──
+# from dsh_py.plugins.subagent_acp import apply as apply_subagent_acp  # 需 subagents+subprocess
 
 PROFILE = [
     # 业务插件行（bundle 核心服务由 boot 自动叠加，无需重复列出）
@@ -79,6 +81,16 @@ PROFILE = [
     # apply_user_questions,              # ctx.userQuestions（提问 seam）
     # apply_permission_presets,          # ctx.permissionPresets（需 shell+approval+sessions；注册 /permission 命令 + permissions 投影）
     # apply_tool_ask_user,               # 模型侧 ask_user_question 工具（需 tools+userQuestions）
+    # ── subagent-acp（外进程 ACP 子代理）── 取消注释启用（需 subagents+subprocess）──
+    # 以「python 脚本子代理」为例：command 是程序本身，args 传脚本路径；也可换成任意 ACP 可执行文件
+    # (apply_subagent_acp, {"command": "python", "args": ["/path/to/acp-agent.py"], "cwd": "C:/ws"}),
+    # ── web 前端演示（--webui）── 取消注释即点亮全部面板 ──
+    # 命令面板 + 目标 + 技能 + 工作区 + 后台任务（缺省仅对话可用，面板显示装配引导）
+    # apply_commands,                     # 命令面板（console/commands/*）
+    # apply_goal,                         # 目标面板（console/goals/get）
+    # apply_skill, apply_skill_fs, apply_skill_badge,   # 技能面板（console/skills/*）
+    # apply_jobs,                         # 任务面板（console/jobs/list）
+    # apply_storage, apply_storage_domain, apply_session_persistence, apply_workspace,  # 工作区面板（console/workspaces/list）
 ]
 # 如需系统指令注入，改为：
 # PROFILE = [

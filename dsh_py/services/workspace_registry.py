@@ -149,11 +149,11 @@ class WorkspaceRegistry(Service):
             await self._recover_pending_mutation()
             self._validate_stored_state(self._require_state())
             if not self._state["initialized"]:
-                headers = await self.ctx.sessionPersistence.list()
+                headers = self.ctx.sessionPersistence.list()
                 await self._replace_header_index(headers)
                 await self._bootstrap(headers)
             elif self._table.size > 0:
-                await self._replace_header_index(await self.ctx.sessionPersistence.list())
+                await self._replace_header_index(self.ctx.sessionPersistence.list())
 
             await self._index_live_sessions()
             self._validate_stored_state(self._require_state())
@@ -259,7 +259,7 @@ class WorkspaceRegistry(Service):
             return True
         if id in self._headers:
             return True
-        await self._index_headers(await self.ctx.sessionPersistence.list())
+        await self._index_headers(self.ctx.sessionPersistence.list())
         return id in self._headers
 
     async def _create_canonical(self, canonical: str, title: Optional[str]) -> WorkspaceEntity:
@@ -562,7 +562,7 @@ class WorkspaceRegistry(Service):
         cached = self._headers.get(id)
         if cached is not None:
             return cached
-        headers = await self.ctx.sessionPersistence.list()
+        headers = self.ctx.sessionPersistence.list()
         await self._index_headers(headers)
         header = self._headers.get(id)
         if header is None:
