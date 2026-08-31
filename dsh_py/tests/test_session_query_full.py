@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dsh_py.core.context import AppContext
 from dsh_py.services import session as S
@@ -154,10 +157,11 @@ def test_search_pagination_and_sessions() -> None:
     ctx, _ = _ctx(persist=False)
     session = ctx.sessions.create()
     _fill(session, rounds=3)  # 3 条含"郑州"的 user/message
-    page1 = ctx.sessionQuery.search_events(session, "郑州", page_size=2)
+    page1 = ctx.sessionQuery.search_events({"sessionId": session.header.id, "query": "郑州", "limit": 2})
     assert len(page1["hits"]) == 2
     assert page1["cursor"] is not None
-    page2 = ctx.sessionQuery.search_events(session, "郑州", page_size=2, cursor=page1["cursor"])
+    page2 = ctx.sessionQuery.search_events(
+        {"sessionId": session.header.id, "query": "郑州", "limit": 2, "cursor": page1["cursor"]})
     assert len(page2["hits"]) == 1
     assert page2["cursor"] is None
     # 不重叠
@@ -166,14 +170,14 @@ def test_search_pagination_and_sessions() -> None:
     assert not (seqs1 & seqs2)
     # 非法游标
     try:
-        ctx.sessionQuery.search_events(session, "郑州", cursor="garbage")
+        ctx.sessionQuery.search_events({"sessionId": session.header.id, "query": "郑州", "cursor": "garbage"})
         raise AssertionError("应抛 invalid cursor")
     except SQ.SessionQueryError as exc:
         assert exc.code == "SESSION_QUERY_INVALID_CURSOR"
     # 跨会话
     other = ctx.sessions.create()
     other.append("user/message", create_user_message([TextBlock("北京天气")], MessageSource("user")))
-    result = ctx.sessionQuery.search_sessions("郑州")
+    result = ctx.sessionQuery.search_sessions({"query": "郑州"})
     assert len(result["hits"]) == 1
     assert result["hits"][0]["session"].id == session.header.id
 

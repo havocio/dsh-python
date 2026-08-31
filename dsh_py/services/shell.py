@@ -18,6 +18,8 @@ from typing import Any, Optional
 from dsh_py.core.context import AppContext
 from dsh_py.core.service import Service
 
+#: 受管理环境变量命名空间前缀（与 shell-env 对齐；合并快照前剥离继承的该前缀变量）。
+DSH_ENV_PREFIX = "DSH_"
 #: seam 路径的收集上限（字节）：旧实现无界读入内存，这里用大上限保留行为。
 _SHELL_COLLECT_MAX = 16 * 1024 * 1024
 #: 终止升级宽限（毫秒）：SIGTERM → grace → SIGKILL。
@@ -64,9 +66,15 @@ class ShellService(Service):
         """
         if not command.strip():
             raise ValueError("命令不能为空")
+        # 提供 env（受信任 DSH_* 快照）时，合并前先剥离所有继承的 DSH_*，避免嵌套
+        # harness / 并发父子 agent 泄漏陈旧身份（对齐 dsh 的本地执行器行为）。
+        effective_env: Optional[dict] = None
+        if env is not None:
+            effective_env = {k: v for k, v in os.environ.items() if not k.startswith(DSH_ENV_PREFIX)}
+            effective_env.update(env)
         if self.ctx.has_service("subprocess"):
-            return await self._execute_via_subprocess(command, cwd, timeout_ms, env)
-        return await self._execute_direct(command, cwd, timeout_ms, env)
+            return await self._execute_via_subprocess(command, cwd, timeout_ms, effective_env)
+        return await self._execute_direct(command, cwd, timeout_ms, effective_env)
 
     async def _execute_via_subprocess(self, command: str, cwd: Optional[str], timeout_ms: Optional[int], env: Optional[dict]) -> dict:
         """seam 路径：``ctx.subprocess.spawn`` + 收集输出 + 超时 ``terminate()``。"""
@@ -114,9 +122,7 @@ class ShellService(Service):
 
     async def _execute_direct(self, command: str, cwd: Optional[str], timeout_ms: Optional[int], env: Optional[dict]) -> dict:
         """回退路径：直接 ``create_subprocess_shell``（seam 未挂载时；保持既有行为）。"""
-        process_env = dict(os.environ)
-        if env:
-            process_env.update(env)
+        process_env = env if env is not None else dict(os.environ)
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,

@@ -170,6 +170,40 @@ button, input, select, textarea { font-family: inherit; }
 .ws-item:hover { background: var(--dsw-static-neutral-bluish-75); }
 .ws-item .ws-path { font-family: var(--dsw-font-mono); font-size: 11.5px; color: var(--dsw-alias-label-caption); }
 
+/* 会话列表项 */
+.sess-item {
+  padding: 7px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; color: var(--dsw-alias-label-secondary);
+  display: flex; align-items: center; gap: 6px;
+}
+.sess-item:hover { background: var(--dsw-static-neutral-bluish-75); }
+.sess-item.active { background: var(--dsw-static-deepseek-100); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.sess-item .sess-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-item .sess-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-static-green-500); flex-shrink: 0; }
+.sess-item .sess-dot.hist { background: var(--dsw-static-neutral-bluish-300); }
+.sess-item .sess-time { font-size: 10.5px; color: var(--dsw-alias-label-caption); flex-shrink: 0; }
+
+/* 轨迹面板 */
+.traj-step { border-left: 2px solid var(--dsw-alias-border); padding: 4px 0 4px 10px; margin-bottom: 6px; font-size: 12px; }
+.traj-step .traj-head { display: flex; align-items: center; gap: 6px; color: var(--dsw-alias-label-tertiary); }
+.traj-step .traj-head .kind { font-weight: 600; color: var(--dsw-static-deepseek-600); }
+.traj-step.tool { border-left-color: var(--dsw-static-deepseek-300); }
+.traj-step.assistant { border-left-color: var(--dsw-static-green-400); }
+.traj-step.error { border-left-color: var(--dsw-static-red-600); }
+.traj-step .traj-body { color: var(--dsw-alias-label-caption); font-family: var(--dsw-font-mono); font-size: 11px; margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+
+/* 弹窗内选项（用户提问） */
+.q-block { margin-bottom: 14px; }
+.q-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.q-hint { font-size: 11.5px; color: var(--dsw-alias-label-caption); margin-bottom: 6px; }
+.q-opt {
+  display: block; width: 100%; text-align: left; margin-bottom: 4px;
+  border: 1px solid var(--dsw-alias-border); background: var(--dsw-alias-bg-base);
+  border-radius: var(--radius-sm); padding: 7px 11px; font-size: 12.5px; cursor: pointer;
+}
+.q-opt:hover { border-color: var(--dsw-static-deepseek-300); }
+.q-opt.selected { border-color: var(--dsw-static-deepseek-500); background: var(--dsw-static-deepseek-50); }
+
 .sidebar-foot {
   padding: 10px 12px; border-top: 1px solid var(--dsw-alias-border);
   display: flex; align-items: center; gap: 8px;
@@ -402,7 +436,9 @@ button, input, select, textarea { font-family: inherit; }
       <button class="nav-item" data-panel="settings"><span class="nav-ico">⚙️</span><span class="nav-label">设置</span></button>
     </nav>
     <div class="sidebar-region">
-      <div class="region-head">工作区</div>
+      <div class="region-head">会话</div>
+      <div id="session-list"><div class="panel-empty" style="padding:8px 0">（未连接）</div></div>
+      <div class="region-head" style="margin-top:10px">工作区</div>
       <div id="ws-list"><div class="panel-empty" style="padding:8px 0">（未连接）</div></div>
     </div>
     <div class="sidebar-foot">
@@ -434,12 +470,16 @@ button, input, select, textarea { font-family: inherit; }
     <div class="details-tabs">
       <button class="details-tab active" data-tab="events">事件</button>
       <button class="details-tab" data-tab="panels">面板</button>
+      <button class="details-tab" data-tab="trajectory">轨迹</button>
     </div>
     <div class="details-body" id="details-events">
       <div id="events-list"></div>
     </div>
     <div class="details-body" id="details-panels" style="display:none">
       <div id="panel-root"></div>
+    </div>
+    <div class="details-body" id="details-trajectory" style="display:none">
+      <div id="trajectory-root"></div>
     </div>
   </aside>
 </div>
@@ -450,6 +490,31 @@ button, input, select, textarea { font-family: inherit; }
     <div class="modal-head"><input id="cmd-input" placeholder="输入命令名过滤，Enter 执行…" autocomplete="off"></div>
     <div class="modal-body" id="cmd-list"></div>
     <div class="modal-foot"><span>↑↓ 选择 · Enter 执行 · Esc 关闭</span><span id="cmd-hint" style="margin-left:auto"></span></div>
+  </div>
+</div>
+
+<!-- 批准请求弹窗 -->
+<div class="modal-overlay" id="approval-overlay">
+  <div class="modal" style="width:440px">
+    <div class="modal-head" style="font-size:14px;font-weight:600">需要授权</div>
+    <div class="modal-body" id="approval-body" style="padding:12px 14px;font-size:13px;line-height:1.7"></div>
+    <div class="modal-foot" style="justify-content:flex-end;gap:8px">
+      <button class="btn" id="approval-cancel">取消</button>
+      <button class="btn" id="approval-reject">拒绝</button>
+      <button class="btn primary" id="approval-approve">批准</button>
+    </div>
+  </div>
+</div>
+
+<!-- 用户提问弹窗 -->
+<div class="modal-overlay" id="question-overlay">
+  <div class="modal" style="width:520px;max-height:70vh">
+    <div class="modal-head" style="font-size:14px;font-weight:600">请选择</div>
+    <div class="modal-body" id="question-body" style="padding:12px 14px"></div>
+    <div class="modal-foot" style="justify-content:flex-end;gap:8px">
+      <button class="btn" id="question-cancel">取消</button>
+      <button class="btn primary" id="question-submit">提交</button>
+    </div>
   </div>
 </div>
 
@@ -474,6 +539,14 @@ const state = {
   reconnectAttempts: 0,
   cmdIndex: 0, cmdFiltered: [],
   services: null,
+  // 会话列表 / 历史回放
+  sessions: [],
+  // 轨迹（当前会话的 step / tool / assistant 节点）
+  trajNodes: [],
+  // 交互桥：在途的批准请求与用户提问
+  approvalRequest: null,
+  questionRequest: null,
+  questionAnswers: {},
 };
 const $ = (id) => document.getElementById(id);
 
@@ -612,12 +685,28 @@ function handleNotification(method, params) {
     handleSessionEvent(ev);
     return;
   }
+  if (method === "approval/request") {
+    addEvent("running", method, JSON.stringify(params).slice(0, 300));
+    showApprovalModal(params);
+    return;
+  }
+  if (method === "approval/closed") {
+    addEvent("idle", method, JSON.stringify(params));
+    closeApprovalModal();
+    return;
+  }
+  if (method === "user-questions/ask") {
+    addEvent("running", method, JSON.stringify(params).slice(0, 300));
+    showQuestionModal(params);
+    return;
+  }
   addEvent("", method, JSON.stringify(params));
 }
 
 function handleSessionEvent(ev) {
   const type = ev.type || "";
   const data = ev.data || {};
+  pushTrajectory(type, data);
   if (type === "assistant/chunk") {
     const chunk = data.chunk || {};
     if (chunk.type === "text-delta" && chunk.text) appendAssistantText(chunk.text);
@@ -648,6 +737,7 @@ function handleSessionEvent(ev) {
       if (meta) meta.textContent += " · " + reason + " · " + nowTime();
     }
     finalizeTurn();
+    loadSessions();  // 回合结束刷新会话列表（时间/存活状态变化）
     return;
   }
   if (type === "agent/error" || (data.reason && data.reason.kind === "error")) {
@@ -657,6 +747,188 @@ function handleSessionEvent(ev) {
   if (type === "message/error") {
     addCard('<span class="err">⚠ ' + esc(data.error ? data.error.message || String(data.error) : "消息错误") + "</span>", true);
     return;
+  }
+}
+
+/* ═══════════════════ 轨迹面板 ═══════════════════ */
+function pushTrajectory(type, data) {
+  const push = (kind, label, detail) => {
+    state.trajNodes.push({ kind, label, detail: detail || "" });
+    if (state.trajNodes.length > 400) state.trajNodes.shift();
+    renderTrajectory();
+  };
+  if (type === "step/start") push("step", "step 开始", "");
+  else if (type === "step/end") push("step", "step 结束", (data.reason && data.reason.kind) || "");
+  else if (type === "tool/start" || type === "tool/call") {
+    push("tool", data.toolName || data.name || "tool",
+      JSON.stringify(data.arguments || data.args || {}).slice(0, 200));
+  } else if (type === "assistant/message") {
+    const content = (data.message && data.message.content) || [];
+    const text = content.filter((b) => (b.__block__ === "text" || b.type === "text"))
+      .map((b) => b.text || "").join("");
+    push("assistant", "assistant", text.slice(0, 200));
+  } else if (type === "turn/start") push("step", "turn 开始", "");
+  else if (type === "turn/end") push("step", "turn 结束", (data.reason && data.reason.kind) || "");
+  else if (type === "agent/error" || type === "message/error") {
+    push("error", type, (data.error && (data.error.message || String(data.error))) || "");
+  }
+}
+function renderTrajectory() {
+  const root = $("trajectory-root");
+  if (!root) return;
+  if (!state.trajNodes.length) {
+    root.innerHTML = '<div class="panel-empty">暂无轨迹</div>';
+    return;
+  }
+  root.innerHTML = state.trajNodes.slice(-200).map((n) =>
+    '<div class="traj-step ' + n.kind + '">' +
+      '<div class="traj-head"><span class="kind">' + esc(n.kind) + "</span><span>" +
+      esc(n.label) + "</span></div>" +
+      (n.detail ? '<div class="traj-body">' + esc(n.detail) + "</div>" : "") +
+    "</div>").join("");
+  root.scrollTop = root.scrollHeight;
+}
+
+/* ═══════════════════ 会话列表 / 历史回放 ═══════════════════ */
+function shortId(id) {
+  const s = String(id || "");
+  return s.length > 14 ? s.slice(0, 12) + "…" : s;
+}
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts > 1e11 ? ts : ts * 1000);
+  if (isNaN(d.getTime())) return "";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return d >= today ? d.toTimeString().slice(0, 5)
+    : (d.getMonth() + 1) + "/" + d.getDate();
+}
+async function loadSessions() {
+  try {
+    const res = await rpc("console/sessions/list");
+    state.sessions = (res && res.sessions) || [];
+  } catch (e) {
+    state.sessions = [];
+  }
+  renderSessions();
+}
+function renderSessions() {
+  const box = $("session-list");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.sessions.length) {
+    box.innerHTML = '<div class="panel-empty" style="padding:8px 0">（无会话）</div>';
+    return;
+  }
+  for (const s of state.sessions) {
+    const item = document.createElement("div");
+    item.className = "sess-item" + (s.id === state.sessionId ? " active" : "");
+    item.innerHTML = '<span class="sess-dot' + (s.live ? "" : " hist") + '"></span>' +
+      '<span class="sess-name">' + esc(shortId(s.id)) + "</span>" +
+      '<span class="sess-time">' + esc(fmtTime(s.createdAt)) + "</span>";
+    item.title = s.id + (s.cwd ? "\n" + s.cwd : "");
+    item.onclick = () => selectSession(s.id);
+    box.appendChild(item);
+  }
+}
+async function selectSession(id) {
+  if (state.running) { toast("当前回合运行中，稍后再切换"); return; }
+  state.sessionId = id;
+  $("session-label").textContent = id;
+  $("messages").innerHTML = "";
+  $("events-list").innerHTML = "";
+  state.trajNodes = [];
+  state.assistantEl = null;
+  state.assistantText = "";
+  state.lastTurn = null;
+  renderSessions();
+  renderTrajectory();
+  try {
+    const res = await rpc("console/session/events", { sessionId: id, fromSeq: 1 });
+    const events = (res && res.events) || [];
+    if (!events.length) {
+      addMessage("assistant", '<span style="color:var(--dsw-alias-label-caption)">空会话，发送消息开始。</span>');
+    } else {
+      for (const ev of events) handleSessionEvent({ type: ev.type, data: ev.data, seq: ev.seq });
+      addMessage("assistant", '<span style="color:var(--dsw-alias-label-caption)">已回放 ' +
+        events.length + " 条历史事件（来源：" + esc(res.source || "?") + "）。</span>");
+    }
+  } catch (e) {
+    addMessage("assistant", '<span class="err">回放失败：' + esc(e.message) + "</span>");
+  }
+}
+
+/* ═══════════════════ 批准 / 提问弹窗 ═══════════════════ */
+function showApprovalModal(p) {
+  state.approvalRequest = p;
+  $("approval-body").innerHTML =
+    "<div><b>" + esc(p.toolName || "工具") + "</b> 请求授权</div>" +
+    (p.reason ? '<div style="color:var(--dsw-alias-label-tertiary);margin-top:4px">' +
+      esc(p.reason) + "</div>" : "") +
+    (p.callId ? '<div class="card-sub" style="margin-top:6px">call: ' + esc(p.callId) + "</div>" : "");
+  $("approval-overlay").classList.add("show");
+}
+function closeApprovalModal() {
+  state.approvalRequest = null;
+  $("approval-overlay").classList.remove("show");
+}
+async function decideApproval(outcome) {
+  const p = state.approvalRequest;
+  if (!p) return;
+  closeApprovalModal();
+  try {
+    await rpc("console/approval/decide", { requestId: p.requestId, outcome });
+  } catch (e) {
+    toast("应答失败：" + e.message);
+  }
+}
+function showQuestionModal(p) {
+  state.questionRequest = p;
+  state.questionAnswers = {};
+  const box = $("question-body");
+  box.innerHTML = "";
+  for (const q of (p.questions || [])) {
+    const qid = q.id || q.question || "";
+    const block = document.createElement("div");
+    block.className = "q-block";
+    block.innerHTML = '<div class="q-title">' + esc(q.question || q.header || "") + "</div>" +
+      (q.multiSelect ? '<div class="q-hint">可多选</div>' : "");
+    for (const opt of (q.options || [])) {
+      const btn = document.createElement("button");
+      btn.className = "q-opt";
+      btn.textContent = opt.label || opt.value;
+      btn.onclick = () => {
+        if (q.multiSelect) {
+          const arr = state.questionAnswers[qid] || [];
+          const i = arr.indexOf(opt.value);
+          if (i >= 0) arr.splice(i, 1);
+          else arr.push(opt.value);
+          state.questionAnswers[qid] = arr;
+          btn.classList.toggle("selected", arr.includes(opt.value));
+        } else {
+          state.questionAnswers[qid] = [opt.value];
+          block.querySelectorAll(".q-opt").forEach((b) => b.classList.remove("selected"));
+          btn.classList.add("selected");
+        }
+      };
+      block.appendChild(btn);
+    }
+    box.appendChild(block);
+  }
+  if (!(p.questions || []).length) {
+    box.innerHTML = '<div class="panel-empty">（无问题内容）</div>';
+  }
+  $("question-overlay").classList.add("show");
+}
+async function submitQuestion(answers) {
+  const p = state.questionRequest;
+  if (!p) return;
+  $("question-overlay").classList.remove("show");
+  state.questionRequest = null;
+  try {
+    await rpc("console/questions/answer", { requestId: p.requestId, answers: answers });
+  } catch (e) {
+    toast("应答失败：" + e.message);
   }
 }
 
@@ -761,6 +1033,7 @@ function newSession() {
   state.assistantText = "";
   state.lastTurn = null;
   addMessage("assistant", '<span style="color:var(--dsw-alias-label-caption)">会话已就绪，发送消息开始对话。</span>');
+  loadSessions();
 }
 async function sendPrompt() {
   const input = $("input");
@@ -866,6 +1139,7 @@ function panelUnavailable(seam, extra) {
 }
 async function refreshPanels() {
   if (!state.connected) return;
+  loadSessions();  // 会话列表随面板一并刷新
   const fn = PANEL_RENDERERS[currentPanel];
   if (fn) fn();
   if (currentPanel === "workspaces") renderWorkspaceSidebar();
@@ -992,6 +1266,8 @@ function showDetailsTab(which) {
     t.classList.toggle("active", t.dataset.tab === which));
   $("details-events").style.display = which === "events" ? "" : "none";
   $("details-panels").style.display = which === "panels" ? "" : "none";
+  $("details-trajectory").style.display = which === "trajectory" ? "" : "none";
+  if (which === "trajectory") renderTrajectory();
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -1025,6 +1301,11 @@ $("toggle-details").addEventListener("click", () => {
   $("app").classList.toggle("details-collapsed");
   $("toggle-details").textContent = $("app").classList.contains("details-collapsed") ? "◀" : "▶";
 });
+$("approval-approve").addEventListener("click", () => decideApproval("approved"));
+$("approval-reject").addEventListener("click", () => decideApproval("rejected"));
+$("approval-cancel").addEventListener("click", () => decideApproval("cancelled"));
+$("question-submit").addEventListener("click", () => submitQuestion(state.questionAnswers));
+$("question-cancel").addEventListener("click", () => submitQuestion(null));
 $("connect-btn").addEventListener("click", () => {
   const url = $("ws-url").value.trim();
   if (url) connect(url);

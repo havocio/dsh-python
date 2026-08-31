@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
@@ -354,3 +355,95 @@ class DetachedRuns:
     def quiesced(self) -> bool:
         """是否所有分离运行都已静默。"""
         return len(self._pending) == 0
+
+
+# --------------------------------------------------------------------------- #
+# 共享执行引擎：按方言运行某拦截点的全部钩子组并合并（桥共用，避免各自重复）
+# --------------------------------------------------------------------------- #
+def _hook_now() -> int:
+    """钩子墙钟起点（毫秒）。"""
+    return int(time.time() * 1000)
+
+
+def _hook_decision_of(output: HookOutput) -> str:
+    """把单条钩子产出归约为耐久事件用的中性决策串。"""
+    if output.continue_flag is False or output.decision in ("block", "deny"):
+        return "block"
+    if output.decision == "ask":
+        return "ask"
+    return "pass"
+
+
+async def run_hook_point(
+    ctx: AppContext,
+    groups: list,
+    point: str,
+    match_query: str,
+    payload: Any,
+    opts: dict,
+) -> "MergedOutcome":
+    """按方言运行 ``point`` 命中的全部钩子组，写 ``hook/invoked``/``hook/result`` 并返回合并结果。
+
+    ``groups`` 为该拦截点的 :class:`MatcherGroup` 列表（未命中 matcher 的组跳过）；``opts``
+    携带：``agent``/``turn``/``signal``、方言 ``mode``（``claude-code``/``codex``）与
+    ``dialect``、``trailing_newline``、``default_timeout_ms``、``stderr_summary_max_chars``、
+    ``project_dir``（写入 ``CLAUDE_PROJECT_DIR`` 环境变量）、``env``（额外环境变量）、
+    ``plain_stdout_as_context``（Codex：干净 stdout 转上下文）、``next_handler_id``（生成 handlerId）。
+    ``turn`` 为 ``None`` 时不写耐久事件（分离运行的生命周期点）。
+    """
+    agent = opts.get("agent")
+    turn = opts.get("turn")
+    signal = opts.get("signal")
+    mode: MatcherMode = opts.get("mode", "claude-code")
+    dialect: HookDialect = opts.get("dialect", "generic")
+    trailing_newline: bool = opts.get("trailing_newline", True)
+    default_timeout_ms: int = opts.get("default_timeout_ms", DEFAULT_HOOK_TIMEOUT_MS)
+    stderr_cap: int = opts.get("stderr_summary_max_chars", DEFAULT_STDERR_SUMMARY_MAX_CHARS)
+    project_dir = opts.get("project_dir")
+    env_extra = opts.get("env") or {}
+    plain_stdout = opts.get("plain_stdout_as_context", False)
+    next_id = opts["next_handler_id"]
+
+    outputs: list = []
+    # 工作目录：优先 opts.cwd，否则取 agent 会话的 cwd（钩子运行目录）
+    workdir = opts.get("cwd")
+    if workdir is None and agent is not None:
+        header = getattr(getattr(agent, "session", None), "header", None)
+        workdir = getattr(header, "cwd", None)
+    hook_env = {**( {"CLAUDE_PROJECT_DIR": project_dir} if project_dir else {} ), **env_extra} or None
+    session = getattr(agent, "session", None) if agent is not None else None
+
+    for group in groups:
+        if not matches_matcher(group.matcher, match_query, mode):
+            continue
+        for hook in group.hooks:
+            handler_id = next_id(point)
+            if session is not None and turn is not None:
+                append_hook_invoked(ctx, session, turn, point, dialect, handler_id, group.matcher)
+            options = RunHookOptions(
+                payload=payload,
+                env=hook_env,
+                cwd=workdir,
+                signal=signal,
+                trailing_newline=trailing_newline,
+                default_timeout_ms=default_timeout_ms,
+                expected_event_name=point,
+            )
+            result = await run_hook(ctx.shell, hook, options, _hook_now)
+            out = result.output
+            # Codex：干净的非 JSON stdout 折叠进上下文（不泄漏裸 JSON 或非零输出）
+            if plain_stdout and out.exit_code == 0 and out.additional_context is None \
+               and out.stdout and not out.stdout.startswith("{"):
+                out.additional_context = out.stdout
+            if out.updated_input is not None:
+                ctx.logger.warn(f"{dialect}: {point} 钩子请求了 updatedInput，暂不支持（已忽略）")
+            if out.system_message is not None:
+                ctx.logger.warn(f"{dialect}: {point} 钩子输出了 systemMessage，暂未呈现（已忽略）")
+            outputs.append(out)
+            if session is not None and turn is not None:
+                append_hook_result(
+                    ctx, session, turn, point, handler_id, _hook_decision_of(out),
+                    result.duration_ms, exit_code=out.exit_code,
+                    stderr_summary=summarize_stderr(out.stderr, stderr_cap) if out.stderr else None,
+                )
+    return merge_hook_outputs(outputs)

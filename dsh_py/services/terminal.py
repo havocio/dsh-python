@@ -38,10 +38,12 @@ def _detect_shell() -> str:
 class TerminalSession:
     """一次持久 shell 会话（Popen + daemon reader 线程行缓冲）。"""
 
-    def __init__(self, session_id: str, cwd: Optional[str] = None, shell: Optional[str] = None) -> None:
+    def __init__(self, session_id: str, cwd: Optional[str] = None, shell: Optional[str] = None,
+                 env: Optional[dict] = None) -> None:
         self.id = session_id
         self.cwd = cwd
         self.shell = shell or _detect_shell()
+        self._env = env  # 受信任 DSH_* 快照（合并后的完整环境）；None 则继承父进程环境
         self._output: queue.Queue = queue.Queue()  # 行缓冲（reader 线程产出）
         self._closed = False
         # 会话内累计输出（含已消费部分，供调试/快照）
@@ -53,6 +55,7 @@ class TerminalSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=cwd,
+            env=self._env,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -115,6 +118,17 @@ class TerminalSession:
                 self.buffer.append(line)
         return "".join(lines)
 
+    def write(self, text: str) -> None:
+        """向 shell 写入一段输入（不等待输出）。
+
+        用于需要自定义完成判定的场景（如工具写入带起始/结束标记的命令后
+        轮询 ``read_available`` 直到命中结束标记，而不是依赖静默检测）。
+        """
+        if self._closed or self._proc.poll() is not None:
+            raise RuntimeError("终端会话已关闭")
+        self._proc.stdin.write(text)
+        self._proc.stdin.flush()
+
     def close(self) -> None:
         """终止会话并回收（幂等）。"""
         if self._closed:
@@ -153,10 +167,13 @@ class TerminalService(Service):
         self._shell = shell or _detect_shell()
         self._sessions: dict[str, TerminalSession] = {}
 
-    def spawn(self, cwd: Optional[str] = None) -> TerminalSession:
-        """启动一个持久 shell 会话并注册。"""
+    def spawn(self, cwd: Optional[str] = None, env: Optional[dict] = None) -> TerminalSession:
+        """启动一个持久 shell 会话并注册。
+
+        :param env: 受信任 ``DSH_*`` 快照合并后的完整环境（``None`` 则继承父进程）。
+        """
         session_id = uuid.uuid4().hex
-        session = TerminalSession(session_id, cwd=cwd, shell=self._shell)
+        session = TerminalSession(session_id, cwd=cwd, shell=self._shell, env=env)
         self._sessions[session_id] = session
         return session
 

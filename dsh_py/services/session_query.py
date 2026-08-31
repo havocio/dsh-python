@@ -31,6 +31,9 @@ from dsh_py.services.session import Session, SessionEvent, SessionHeader
 READ_WINDOW_MAX = 50
 # 批量读的最大并发持久化检查数（对齐 dsh 的 DEFAULT_PERSISTED_INSPECT_CONCURRENCY）
 PERSISTED_INSPECT_CONCURRENCY = 4
+# 默认/最大检索分页大小（对齐 dsh 的 SESSION_QUERY_SQLITE_DEFAULT_LIMIT / MAX_LIMIT）
+SEARCH_DEFAULT_LIMIT = 20
+SEARCH_MAX_LIMIT = 100
 
 
 class SessionQueryError(RuntimeError):
@@ -59,6 +62,29 @@ _NON_SURFACE_TYPES = {"turn/start", "turn/end", "step/start", "step/end", "tool/
 def tokenize(text: str) -> list[str]:
     """把文本切成检索词：字母数字词小写 + CJK 单字。"""
     return [token.lower() for token in _WORD.findall(text)]
+
+
+def _normalize_query(value: Any) -> str:
+    """规范化全文检索查询（对齐 dsh 的 ``normalizeQuery``）：非空、去 NUL、空白折叠。"""
+    if not isinstance(value, str):
+        raise SessionQueryError("session-search query 必须为字符串", "SESSION_QUERY_INVALID_QUERY")
+    q = value.strip()
+    q = re.sub(r"\s+", " ", q)
+    if not q:
+        raise SessionQueryError("session-search query 不能为空", "SESSION_QUERY_INVALID_QUERY")
+    if "\0" in q:
+        raise SessionQueryError("session-search query 不能包含 NUL", "SESSION_QUERY_INVALID_QUERY")
+    return q
+
+
+class _IndexSession:
+    """仅供倒排索引使用的轻量会话视图（仅需 ``header.id`` 与 ``events``）。"""
+
+    __slots__ = ("header", "events")
+
+    def __init__(self, header: Any, events: Any) -> None:
+        self.header = header
+        self.events = events
 
 
 def extract_event_text(event: SessionEvent) -> str:
@@ -327,6 +353,8 @@ class SessionQueryEngine(Service):
         super().__init__(ctx, "sessionQuery")
         config = config or {}
         self._read_window_max = int(config.get("readWindowMax", READ_WINDOW_MAX))
+        self._default_limit = int(config.get("defaultLimit", SEARCH_DEFAULT_LIMIT))
+        self._max_limit = int(config.get("maxLimit", SEARCH_MAX_LIMIT))
         self._corpus = SessionCorpus(ctx)
         # 全文检索倒排索引：session_id -> {term: [seq, ...]} + 已索引 seq
         self._index: dict[str, dict[str, list[int]]] = {}
@@ -430,22 +458,44 @@ class SessionQueryEngine(Service):
             upto = event.seq
         self._indexed_upto[session_id] = upto
 
-    def search_events(self, session: Session, query: str, page_size: int = 20,
-                      cursor: Optional[str] = None) -> dict:
-        """在一个会话内全文检索（倒排交集 + seq 升序 + 分页游标）。
-
-        返回 ``{"session": header, "hits": [...], "cursor": str|None}``；
-        游标为不透明 continuation token（JSON 编码的 offset）。
-        """
-        self._ensure_indexed(session)
-        terms = [t for t in tokenize(query) if t]
+    def _intersect_terms(self, session_id: str, terms: list[str]) -> Optional[set[int]]:
+        """对会话倒排索引做多词交集（任一词无命中即空集）。"""
         hit_seqs: Optional[set[int]] = None
-        index = self._index.get(session.header.id, {})
+        index = self._index.get(session_id, {})
         for term in terms:
             seqs = set(index.get(term, []))
             hit_seqs = seqs if hit_seqs is None else hit_seqs & seqs
             if not hit_seqs:
                 break
+        return hit_seqs
+
+    def _limit(self, value: Any) -> int:
+        """校验并归一化检索分页上限（1.._max_limit）。"""
+        limit = self._default_limit if value is None else value
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > self._max_limit:
+            raise SessionQueryError(
+                f"session-search limit 必须是 1..{self._max_limit} 的整数",
+                "SESSION_QUERY_INVALID_LIMIT",
+            )
+        return limit
+
+    def search_events(self, request: dict, exec: Any = None) -> dict:
+        """在一个会话内全文检索（倒排交集 + seq 升序 + 分页游标）。
+
+        ``request``: ``{"sessionId", "query", "filters"? (事件级元数据过滤),
+        "limit"?, "cursor"?}``。
+        返回 ``{"session": header, "hits": [...], "cursor": str|None}``；
+        游标为不透明 continuation token（JSON 编码的 offset）。
+        """
+        session_id = request["sessionId"]
+        query = _normalize_query(request.get("query", ""))
+        filters = materialize_session_event_result_filters(request.get("filters", []))
+        page_size = self._limit(request.get("limit"))
+        cursor = request.get("cursor")
+        loaded = self._corpus.load(session_id)
+        session = loaded.get("session") or _IndexSession(loaded["header"], loaded["events"])
+        self._ensure_indexed(session)
+        hit_seqs = self._intersect_terms(session.header.id, [t for t in tokenize(query) if t])
         documents = build_session_event_search_documents(
             session.header.id, session.events, session,
         )
@@ -454,30 +504,31 @@ class SessionQueryEngine(Service):
         else:
             by_seq = {d["seq"]: d for d in documents}
             matched = [by_seq[s] for s in sorted(hit_seqs) if s in by_seq]
+        if filters:
+            matched = filter_session_event_documents(matched, filters)
         offset = self._cursor_offset(cursor)
         page = matched[offset:offset + page_size]
         next_cursor = self._encode_cursor(offset + len(page)) if offset + len(page) < len(matched) else None
-        return {"session": session.header, "hits": page, "cursor": next_cursor}
+        return {"session": loaded["header"], "hits": page, "cursor": next_cursor}
 
-    def search_sessions(self, query: str, page_size: int = 20,
-                        cursor: Optional[str] = None) -> dict:
-        """跨语料库全文检索并分页（按最强命中事件排名）。"""
+    def search_sessions(self, request: dict, exec: Any = None) -> dict:
+        """跨语料库全文检索并分页（按最强命中事件排名）。
+
+        ``request``: ``{"query", "sessionFilters"? (id/cwd/parent/availability/created-at),
+        "eventFilters"? (seq/time/type/surface), "limit"?, "cursor"?}``。
+        """
+        query = _normalize_query(request.get("query", ""))
+        session_filters = materialize_session_result_filters(request.get("sessionFilters", []))
+        event_filters = materialize_session_event_result_filters(request.get("eventFilters", []))
+        page_size = self._limit(request.get("limit"))
+        cursor = request.get("cursor")
         hits: list[dict] = []
         for record in self._corpus.list_sessions():
             session = self.ctx.sessions.get(record["header"].id)
             if session is None:
                 continue
             self._ensure_indexed(session)
-            terms = [t for t in tokenize(query) if t]
-            if not terms:
-                continue
-            index = self._index.get(session.header.id, {})
-            hit_seqs: Optional[set[int]] = None
-            for term in terms:
-                seqs = set(index.get(term, []))
-                hit_seqs = seqs if hit_seqs is None else hit_seqs & seqs
-                if not hit_seqs:
-                    break
+            hit_seqs = self._intersect_terms(session.header.id, [t for t in tokenize(query) if t])
             if not hit_seqs:
                 continue
             documents = build_session_event_search_documents(
@@ -485,9 +536,14 @@ class SessionQueryEngine(Service):
             )
             by_seq = {d["seq"]: d for d in documents}
             matched = [by_seq[s] for s in sorted(hit_seqs) if s in by_seq]
-            if matched:
-                hits.append({"session": record["header"], "hitCount": len(matched),
-                             "strongest": matched[0]})
+            if event_filters:
+                matched = filter_session_event_documents(matched, event_filters)
+            if not matched:
+                continue
+            if session_filters and not filter_session_results([record], session_filters):
+                continue
+            hits.append({"session": record["header"], "hitCount": len(matched),
+                         "strongest": matched[0]})
         hits.sort(key=lambda h: -h["hitCount"])
         offset = self._cursor_offset(cursor)
         page = hits[offset:offset + page_size]
@@ -608,7 +664,8 @@ class SessionQueryEngine(Service):
 
     def search(self, session: Session, query: str) -> list[dict]:
         """关键词全文检索（旧 API：无分页，返回带 text 的命中记录）。"""
-        page = self.search_events(session, query, page_size=10 ** 9)
+        page = self.search_events(
+            {"sessionId": session.header.id, "query": query, "limit": self._max_limit})
         return page["hits"]
 
 

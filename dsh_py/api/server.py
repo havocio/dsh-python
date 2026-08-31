@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from dsh_py.core.context import AppContext
 from dsh_py.api.protocol import JsonRpcLineTransport
+from dsh_py.api.web_bridge import WebBridge
 from dsh_py.services.agent import AgentOptions
 from dsh_py.services.adapters.deepseek import apply as apply_deepseek
 from dsh_py.services.message import (
@@ -97,6 +98,20 @@ class HarnessSdkJsonRpcServer:
         # 订阅：会话日志 → session.event；agent 生命周期 → session.status
         self._disposers.append(ctx.on("session/event", self._on_session_event))
         self._disposers.append(ctx.on("agent/status", self._on_agent_status))
+
+        # 交互桥：批准 / 用户提问 → 浏览器前端（本连接拥有的会话才应答）
+        self._bridge: Optional[WebBridge] = WebBridge(
+            ctx,
+            notify=self._bridge_notify,
+            owns_session=lambda session_id: session_id in self._records,
+        )
+        self._bridge.install()
+
+    async def _bridge_notify(self, method: str, params: dict) -> None:
+        """向本连接推一条通知（兼容 async / sync 两种 transport.notify）。"""
+        result = self.transport.notify(method, params)
+        if asyncio.iscoroutine(result):
+            await result
 
     # ------------------------------------------------------------------ #
     # 通知（server → client）
@@ -187,6 +202,14 @@ class HarnessSdkJsonRpcServer:
             return await self._console_jobs_list()
         if method == "console/plan/get":
             return await self._console_plan_get(params)
+        if method == "console/sessions/list":
+            return await self._console_sessions_list()
+        if method == "console/session/events":
+            return await self._console_session_events(params)
+        if method == "console/approval/decide":
+            return await self._console_approval_decide(params)
+        if method == "console/questions/answer":
+            return await self._console_questions_answer(params)
         raise RuntimeError(f"unknown DeepSeek Harness SDK runtime method: {method}")
 
     # ------------------------------------------------------------------ #
@@ -197,6 +220,8 @@ class HarnessSdkJsonRpcServer:
         names = [
             "commands", "goals", "skills", "workspaceRegistry", "jobs",
             "planMode", "sessions", "agents", "settings", "credentials",
+            # 交互桥（前端弹窗）
+            "approval", "userQuestions", "sessionPersistence",
         ]
         services = {
             name: bool(self.ctx.has_service(name)) for name in names
@@ -337,6 +362,105 @@ class HarnessSdkJsonRpcServer:
         return {"available": True, "plan": plan}
 
     # ------------------------------------------------------------------ #
+    # 会话列表 / 历史回放
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _session_summary(header: Any, live: bool) -> dict:
+        """会话摘要（内存会话与持久化 header 统一形状）。"""
+        return {
+            "id": str(getattr(header, "id", "")),
+            "cwd": getattr(header, "cwd", None),
+            "createdAt": getattr(header, "created_at", None),
+            "parentSession": getattr(header, "parent_session", None),
+            "live": live,
+        }
+
+    @staticmethod
+    def _encode_event(event: Any) -> dict:
+        return {
+            "type": getattr(event, "type", ""),
+            "seq": getattr(event, "seq", 0),
+            "time": getattr(event, "time", None),
+            "data": _encode_payload(getattr(event, "data", None)),
+        }
+
+    async def _console_sessions_list(self) -> dict:
+        """内存会话 + 持久化历史会话（去重，按创建时间倒序）。"""
+        if not self.ctx.has_service("sessions"):
+            return {"available": False}
+        sessions: list[dict] = []
+        seen: set[str] = set()
+        for session_id in self.ctx.sessions.list():
+            session = self.ctx.sessions.get(session_id)
+            header = getattr(session, "header", None)
+            if header is None:
+                continue
+            sessions.append(self._session_summary(header, live=True))
+            seen.add(str(header.id))
+        if self.ctx.has_service("sessionPersistence"):
+            try:
+                for header in self.ctx.sessionPersistence.list():
+                    if str(header.id) in seen:
+                        continue
+                    sessions.append(self._session_summary(header, live=False))
+                    seen.add(str(header.id))
+            except Exception as exc:  # noqa: BLE001 - 列举失败按无历史处理
+                return {"available": True, "error": str(exc), "sessions": sessions}
+        sessions.sort(key=lambda s: s.get("createdAt") or 0, reverse=True)
+        return {"available": True, "sessions": sessions}
+
+    async def _console_session_events(self, params: dict) -> dict:
+        """读取一个会话的事件（内存优先，否则持久化回放）。"""
+        session_id = str(params.get("sessionId") or "")
+        if not session_id:
+            return {"available": False, "error": "sessionId is required", "events": []}
+        from_seq = params.get("fromSeq") or 1
+        try:
+            from_seq = int(from_seq)
+        except (TypeError, ValueError):
+            from_seq = 1
+        if self.ctx.has_service("sessions"):
+            session = self.ctx.sessions.get(session_id)
+            if session is not None:
+                events = [e for e in getattr(session, "events", [])
+                          if getattr(e, "seq", 0) >= from_seq]
+                return {"available": True, "source": "memory",
+                        "events": [self._encode_event(e) for e in events]}
+        if self.ctx.has_service("sessionPersistence"):
+            try:
+                data = self.ctx.sessionPersistence.read_from(session_id, from_seq)
+            except Exception as exc:  # noqa: BLE001
+                return {"available": True, "error": str(exc), "events": []}
+            if data is not None:
+                return {
+                    "available": True,
+                    "source": "persistence",
+                    "events": [self._encode_event(e) for e in (data.get("events") or [])],
+                }
+        return {"available": True, "source": None, "events": []}
+
+    # ------------------------------------------------------------------ #
+    # 交互桥应答（前端 → 服务）
+    # ------------------------------------------------------------------ #
+    async def _console_approval_decide(self, params: dict) -> dict:
+        """前端对一次批准请求作答。"""
+        if self._bridge is None:
+            return {"available": False, "delivered": False}
+        request_id = str(params.get("requestId") or "")
+        outcome = str(params.get("outcome") or "rejected")
+        delivered = self._bridge.decide_approval(request_id, outcome)
+        return {"available": True, "delivered": delivered}
+
+    async def _console_questions_answer(self, params: dict) -> dict:
+        """前端回答一次用户提问（answers: {questionId: [value]}）。"""
+        if self._bridge is None:
+            return {"available": False, "delivered": False}
+        request_id = str(params.get("requestId") or "")
+        answers = params.get("answers")
+        delivered = self._bridge.answer_question(request_id, answers)
+        return {"available": True, "delivered": delivered}
+
+    # ------------------------------------------------------------------ #
     # 会话管理
     # ------------------------------------------------------------------ #
     async def _get_or_create_session(self, session_id: str) -> dict:
@@ -376,6 +500,13 @@ class HarnessSdkJsonRpcServer:
     # ------------------------------------------------------------------ #
     async def _perform_shutdown(self) -> dict:
         self._shutting_down = True
+        # 交互桥先卸载：结算在途的批准/提问（前端已断开或主动 shutdown）
+        if self._bridge is not None:
+            try:
+                await self._bridge.close()
+            except Exception:  # noqa: BLE001 - 桥清理失败不阻断关闭
+                pass
+            self._bridge = None
         # 等 in-flight 会话创建完成（幂等清理）
         creations = list(self._creations.values())
         await asyncio.gather(*creations, return_exceptions=True)

@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dsh_py.core.context import AppContext
 from dsh_py.services.message import (
