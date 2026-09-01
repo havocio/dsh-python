@@ -51,6 +51,15 @@ def _agent(ctx):
     return session, agent
 
 
+async def _invoke(ctx, name, agent, raw_input="", signal=None):
+    """按现行命令 API 执行（``execute(agent, line, signal)``），解包 ``.result``。"""
+    from dsh_py.core.signal import CancelSignal
+
+    line = f"/{name}" + (f" {raw_input}" if raw_input else "")
+    execution = await ctx.commands.execute(agent, line, signal or CancelSignal())
+    return execution.result if execution is not None else None
+
+
 def _goal_msg(text, goal_id, revision, round_):
     return create_user_message(
         [TextBlock(text)],
@@ -442,7 +451,7 @@ async def test_command_goal_grammar():
     session, agent = _agent(ctx)
 
     async def run(raw):
-        return await ctx.commands.invoke("goal", agent, raw_input=raw)
+        return await _invoke(ctx, "goal", agent, raw)
 
     # show：无目标
     r = await run("")

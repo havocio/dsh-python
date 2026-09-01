@@ -25,6 +25,7 @@ from typing import Any, Optional
 from dsh_py.core import schema as z
 from dsh_py.core.context import AppContext
 from dsh_py.core.service import Service
+from dsh_py.services.commands import CommandDefinition
 from dsh_py.services.message import MessageSource, TextBlock, create_user_message
 from dsh_py.services.system_prompt import PromptSection
 
@@ -131,11 +132,11 @@ class PlanModeController(Service):
             ))
 
         if hasattr(ctx, "commands"):
-            ctx.commands.register(
-                "plan",
-                "Enter or leave plan mode",
-                lambda invocation: self._run_plan_command(invocation),
-            )
+            ctx.commands.register(CommandDefinition(
+                name="plan",
+                description="Enter or leave plan mode",
+                handler=lambda invocation: self._run_plan_command(invocation),
+            ))
 
         ctx.tools.register(EXIT_PLAN_MODE, _EXIT_DESCRIPTION, {
             "type": "object",
@@ -219,7 +220,10 @@ class PlanModeController(Service):
             )
         outcome = self.set(agent, True)
         if message:
-            agent.insert(create_user_message(
+            # 把 steer 消息排入「下一 turn」收件箱，**不**走 ``agent.insert`` —— 后者在
+            # agent 空闲时会立即拉起 _drain 把消息消费掉，使「/plan 消息」变成内联执行
+            # 而非为下一轮计划模式预置提示。命令处在 turn 内执行，由下一 turn 边界统一认领。
+            agent.inbox.append("next-turn", create_user_message(
                 [TextBlock(message)],
                 source=MessageSource("user"),
             ))

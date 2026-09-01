@@ -79,7 +79,8 @@ class E2BRuntime(Service):
     def _ensure_open(self) -> "asyncio.Future[Any]":
         """惰性启动沙箱打开任务，返回可用于 await 的就绪 future。"""
         if self._ready is None:
-            self._ready = asyncio.get_event_loop().create_future()
+            loop = asyncio.get_event_loop()
+            self._ready = loop.create_future()
             asyncio.ensure_future(self._open())
         return self._ready
 
@@ -93,7 +94,6 @@ class E2BRuntime(Service):
             raise RuntimeError("E2B sandbox service is disposing")
         ready = self._ensure_open()
         sandbox = await ready
-        # 等待就绪会让出执行，销毁可能在之后才竞争到；二次检查。
         if self._disposed:
             raise RuntimeError("E2B sandbox service is disposing")
         return sandbox

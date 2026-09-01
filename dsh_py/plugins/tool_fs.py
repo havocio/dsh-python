@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from dsh_py.core.context import AppContext
-from dsh_py.services.fs import READ_LIMIT, READ_MAX_BYTES, READ_MAX_LINE_LENGTH
+from dsh_py.services.fs import FS_SANDBOX_DENIED, FsError, READ_LIMIT, READ_MAX_BYTES, READ_MAX_LINE_LENGTH
 
 # 工具参数 JSON Schema
 READ_SCHEMA = {
@@ -65,7 +65,7 @@ def apply(ctx: AppContext, config: Any = None) -> None:
     max_line_length = int(config.get("readMaxLineLength", READ_MAX_LINE_LENGTH))
     max_bytes = int(config.get("readMaxBytes", READ_MAX_BYTES))
 
-    async def read_handler(args: dict) -> str:
+    async def read_handler(args: dict, exec: dict) -> str:
         file_path = args.get("file_path", "")
         offset = int(args.get("offset", 1) or 1)
         limit = int(args.get("limit", read_limit) or read_limit)
@@ -75,31 +75,33 @@ def apply(ctx: AppContext, config: Any = None) -> None:
             return f"错误：limit 不能超过 {read_limit}", True
         try:
             result = ctx.fs.read_text(file_path, offset=offset, limit=limit,
-                                      max_line_length=max_line_length, max_bytes=max_bytes)
+                                      max_line_length=max_line_length, max_bytes=max_bytes,
+                                      actor=exec.get("agent"))
             return _format_read(result), False
         except (FileNotFoundError, IsADirectoryError, PermissionError) as exc:
             return f"错误：{exc}"
 
-    async def write_handler(args: dict) -> str:
+    async def write_handler(args: dict, exec: dict) -> str:
         file_path = args.get("file_path", "")
         content = args.get("content", "")
         try:
-            result = ctx.fs.write_text(file_path, content)
+            result = ctx.fs.write_text(file_path, content, actor=exec.get("agent"))
             return f"已写入 {result['path']}（{result['bytes']} 字节）", False
-        except (PermissionError, OSError, ValueError) as exc:
+        except (PermissionError, OSError, ValueError, FsError) as exc:
             return f"错误：{exc}"
 
-    async def edit_handler(args: dict) -> str:
+    async def edit_handler(args: dict, exec: dict) -> str:
         file_path = args.get("file_path", "")
         old_string = args.get("old_string", "")
         new_string = args.get("new_string", "")
         replace_all = bool(args.get("replace_all", False))
         try:
-            result = ctx.fs.edit_text(file_path, old_string, new_string, replace_all=replace_all)
+            result = ctx.fs.edit_text(file_path, old_string, new_string,
+                                      replace_all=replace_all, actor=exec.get("agent"))
             if not result["replaced"]:
                 return f"未找到匹配的旧文本（{result['count']} 处）：{file_path}", False
             return f"已替换 {result['count']} 处 → {file_path}（{result['bytes']} 字节）", False
-        except (FileNotFoundError, ValueError, PermissionError, OSError) as exc:
+        except (FileNotFoundError, ValueError, PermissionError, OSError, FsError) as exc:
             return f"错误：{exc}"
 
     ctx.tools.register("read", "按行窗口读取 UTF-8 文件（行号 + 截断标记）", READ_SCHEMA, read_handler)

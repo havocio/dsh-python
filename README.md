@@ -2,7 +2,7 @@
 
 用 **Python 一比一复刻 [dsh](https://github.com/deepseek-ai/dsh)**（DeepSeek Harness）的完整功能——让不懂 TypeScript 的开发者也能用上 dsh 的全套「全插件式」Agent 框架能力。
 
-> **现状**：第 0/1/2/4 层全部完成；第 3 层支撑服务 **41 包代码已落地** + 近期补完 **10 个纯 Python 工具包**（均含冒烟全绿）；**69 个测试模块全绿**（约 500+ 断言）；框架内核零第三方依赖。逐包进度见 [`docs/PROGRESS.md`](docs/PROGRESS.md)。
+> **现状**：第 0/1/2/4 层全部完成；第 3 层支撑服务 **45 个功能包已落地**（含近期补完的纯 Python 工具/后端包，均含冒烟全绿）；**79 个测试模块全绿**（约 540+ 断言）；框架内核零第三方依赖。逐包进度见 [`docs/PROGRESS.md`](docs/PROGRESS.md)。
 
 ---
 
@@ -29,7 +29,7 @@ dsh_py 是把 dsh 的 **TypeScript 实现逐包翻译成 Python** 的忠实复�
 - **一切皆插件**：模型适配器、工具注册表、会话日志、甚至智能体循环（agent loop）本身都是 profile 插件，任何一部分都可以从配置替换，运行期也可 `ctx.agents.set_factory(...)` 热换
 - **cordis 内核完整翻译**：Fiber 生命周期、作用域树（多会话隔离）、schema 校验、依赖拓扑 + 延迟就绪、内置 logger/reflect/registry、Loader/Boot 多 layer 装配、热重载 watcher
 - **三 seam 完整版**：Session（JSONL/SQLite+zstd 持久化、resume、checkpoint、projection/query）/ Agent（Inbox 双队列、cancel 三源融合、声明式、resume）/ LLM（call-config 三层合并、retry、api-key 解析链、多路由适配器）
-- **支撑服务 41 包**：system-prompt / tools / settings / subagent / mcp / compaction / fs·shell·terminal / guard / hooks / schedule / todo / attachment / feedback / storage / spill / identity / jobs / context 家族 / goal 家族 / plan / workflow 编排引擎 / subprocess / typert / invariants，以及 web / skill / workspace / preset / interaction / subagent-acp 家族（详见 [`docs/PROGRESS.md`](docs/PROGRESS.md)）
+- **支撑服务 45 包**：system-prompt / tools / settings / subagent / mcp / compaction / fs·shell·terminal / guard / hooks / schedule / todo / attachment / feedback / storage / spill / identity / jobs / context 家族 / goal 家族 / plan / workflow 编排引擎 / subprocess / typert / invariants，以及 web / skill / workspace / preset / interaction / subagent-acp 家族（详见 [`docs/PROGRESS.md`](docs/PROGRESS.md)）
 - **应用层**：进程内 SDK、跨进程 JSON-RPC SDK、WebSocket 常驻网关、交互式 CLI + headless 单任务模式
 
 **依赖策略**：框架内核零第三方依赖；HTTP 类适配器懒加载 `httpx`；sqlite 后端可选 `zstandard`；Web 网关依赖 `websockets`（均仅应用层）。新依赖统一装入隔离 venv。
@@ -42,7 +42,7 @@ dsh_py 是把 dsh 的 **TypeScript 实现逐包翻译成 Python** 的忠实复�
 ┌─ 第 4 层 应用层 ─────────────────────────────────────────────┐
 │  cli.py（交互/headless/--jsonrpc）  sdk.py（进程内）          │
 │  api/（跨进程 JSON-RPC over stdio）  gateway.py + websocket   │
-├─ 第 3 层 支撑服务（41 包，全部插件装配）────────────────────────┤
+├─ 第 3 层 支撑服务（45 包，全部插件装配）────────────────────────┤
 │  system-prompt · tools · settings · credentials · subagent · │
 │  mcp · compaction · fs/shell/terminal · guard · hooks ·      │
 │  schedule · todo · attachment · feedback · util · storage ·  │
@@ -242,8 +242,8 @@ python -m dsh_py.gateway --port 8080 --mock --webui   # 同端口伺服浏览器
 ## 7. 复刻进度概要
 
 - **第 0/1/2/4 层**：全部完成（cordis 内核、Loader/Boot、三 seam、应用层）。
-- **第 3 层支撑服务**：41 个功能包代码落地（含 web / skill / workspace / preset / interaction / subagent-acp 家族，均端到端冒烟）；另有 10 个纯 Python 工具包补完（均含冒烟全绿）。`shell-env` 核心注册表已写、接线进行中。
-- **六包**（`code-runtime`/`sandbox`/`lsp`/`acp`/`tmux-context`/`e2b`）按「seam + 本地后端/占位」翻译，通过 `py_compile`，尚未做运行时验证与单测（用户拍板「先把代码写出来，能不能跑先不管」）。
+- **第 3 层支撑服务**：45 个功能包代码落地（含 web / skill / workspace / preset / interaction / subagent-acp 家族，均端到端冒烟；近期另补 session-title / shell-env / session-telemetry / session-query-sqlite / fs-sandbox / fs-observation-policy 等纯 Python 工具/后端包，均含入库冒烟）。
+- **六包**（`code-runtime`/`sandbox`/`lsp`/`acp`/`tmux-context`；`e2b` 仅占位 seam）：`code-runtime`/`sandbox` 已带 seam 契约单测（正式入库，79 模块全绿）；`lsp`/`acp`/`tmux-context` 通过 `py_compile`、尚未做运行时验证与单测；`e2b` 后端（`fs-e2b`/`subprocess-e2b`）用户已明确排除（需账号 + SDK）。
 
 完整逐包清单、A 类工具包明细、六包决策背景、未做项 → [`docs/PROGRESS.md`](docs/PROGRESS.md)。
 
@@ -259,7 +259,7 @@ for t in dsh_py/tests/test_*.py; do python "$t"; done
 # 或单跑某个：python dsh_py/tests/test_workflow.py
 ```
 
-**69 个测试模块**（约 500+ 断言）按层分组清单见 [`docs/PROGRESS.md`](docs/PROGRESS.md)。
+**79 个测试模块**（约 540+ 断言）按层分组清单见 [`docs/PROGRESS.md`](docs/PROGRESS.md)。
 
 ---
 
@@ -267,7 +267,7 @@ for t in dsh_py/tests/test_*.py; do python "$t"; done
 
 | 文档 | 内容 |
 | --- | --- |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | 逐包复刻进度（41 包清单 + A 类 10 包 + 六包 + 未做项）+ 测试模块清单 |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | 逐包复刻进度（45 包清单 + 六包 + 未做项）+ 测试模块清单 |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 架构总览图 + 承重不变量（防回归） |
 | [`docs/STRUCTURE.md`](docs/STRUCTURE.md) | `dsh_py/` 完整目录结构树 |
 | [`docs/DIFFERENCES.md`](docs/DIFFERENCES.md) | 与 dsh（TypeScript）的已知差异对照表 |

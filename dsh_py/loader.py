@@ -219,7 +219,13 @@ def _topo_sort(entries: list[tuple]) -> list[tuple]:
 
 
 def _load_rows(ctx: AppContext, rows: list[dict]) -> list:
-    """按拓扑顺序加载规范化行；延迟就绪机制保证跨插件顺序无关；返回句柄列表。"""
+    """按拓扑顺序加载规范化行；延迟就绪机制保证跨插件顺序无关；返回句柄列表。
+
+    组合后的行（含被 ``disabled`` 标记的行）同步填入 ``ctx.loader``，供
+    ``host/plugin-inventory`` 做只读投影——仅当 loader 服务存在时（内置惰性提供）。
+    """
+    if ctx.has_service("loader"):
+        ctx.loader.record(rows)
     handles = []
     for apply_fn, config, _inject, _provides in _topo_sort(_collect_entries(rows)):
         # lazy=True：依赖缺失时挂起，待后续插件 provide 后自动唤醒（延迟就绪）
@@ -234,6 +240,8 @@ def _provide_builtins(ctx: AppContext) -> None:
     """内核内置服务（对标 cordis 的 logger/reflect/registry），随装配自动提供。
 
     仅当尚未提供时提供（幂等），不依赖 profile、与 ``events`` 同属内核设施。
+    ``loader`` / ``pluginInventory`` 是 host 范畴的只读投影基础设施，同样惰性内置，
+    供 ``boot`` / ``load_profile`` 在组合后填充、供 web 网关 ``pluginInventory/list`` 读取。
     """
     if not ctx.has_service("logger"):
         from dsh_py.core.logger import LoggerService
@@ -244,6 +252,12 @@ def _provide_builtins(ctx: AppContext) -> None:
     if not ctx.has_service("registry"):
         from dsh_py.core.registry import RegistryService
         RegistryService(ctx)
+    if not ctx.has_service("loader"):
+        from dsh_py.services.loader import LoaderService
+        LoaderService(ctx)
+    if not ctx.has_service("pluginInventory"):
+        from dsh_py.services.plugin_inventory import PluginInventoryService
+        PluginInventoryService(ctx)
 
 
 def load_profile(ctx: AppContext, profile: list[ProfileEntry]) -> list:

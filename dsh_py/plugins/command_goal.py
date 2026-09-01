@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from dsh_py.core.context import AppContext
-from dsh_py.services.commands import CommandInvocation, CommandResult
+from dsh_py.services.commands import CommandDefinition, CommandInvocation, CommandResult
 from dsh_py.services.goal_fold import GoalError
 
 PLUGIN_NAME = "command-goal"
@@ -131,11 +131,11 @@ def apply(ctx: AppContext) -> None:
     """注册 ``/goal`` 命令（commands 缝装配时）。"""
     if not hasattr(ctx, "commands"):
         return
-    ctx.commands.register(
-        "goal",
-        "set or view the goal for a long-running task",
-        lambda invocation: execute_goal_command(ctx, invocation),
-    )
+    ctx.commands.register(CommandDefinition(
+        name="goal",
+        description="set or view the goal for a long-running task",
+        handler=lambda invocation: execute_goal_command(ctx, invocation),
+    ))
 
 
 apply.Config = None

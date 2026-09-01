@@ -12,6 +12,7 @@ from typing import Any, Optional
 from dsh_py.api.protocol import JsonRpcResponseError
 from dsh_py.api.websocket import JsonRpcWebSocketTransport, WebSocketGatewayServer
 from dsh_py.cli import MockAdapter
+from dsh_py.services.gateway_auth import GatewayAuth
 from dsh_py.config import AppConfig
 from dsh_py.core.context import AppContext
 from dsh_py.loader import CORE_PROFILE, load_profile
@@ -211,11 +212,113 @@ async def test_gateway_unknown_method_and_two_connections():
         ctx.dispose()
 
 
+# --------------------------------------------------------------------------- #
+# 网关鉴权：单元 + 端到端（默认关闭；启用后需 initialize 携带 authToken）
+# --------------------------------------------------------------------------- #
+async def _recv_response(ws: Any, want_id: str, timeout: float = 5) -> dict:
+    """读取下一帧；遇到通知（无 id，即事件/状态广播）则跳过，直到匹配 id 的响应。"""
+    while True:
+        frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+        if "id" in frame:
+            assert frame["id"] == want_id, frame
+            return frame
+        # 通知（session.event / session.status 等）跳过
+
+
+async def test_gateway_auth_unit():
+    # 禁用：空 / None → 视为开放（authenticate 恒 True）
+    disabled = GatewayAuth(None)
+    assert not disabled.enabled
+    assert disabled.authenticate({"authToken": "x"}) is True
+    # 启用：匹配 / 不匹配 / 大小写敏感 / 缺字段
+    a = GatewayAuth("s3cr3t")
+    assert a.enabled
+    assert a.authenticate({"authToken": "s3cr3t"})
+    assert not a.authenticate({"authToken": "S3CR3T"})
+    assert not a.authenticate({"authToken": ""})
+    assert not a.authenticate({})
+    # from_config：配置优先于环境变量
+    a2 = GatewayAuth.from_config({"gateway": {"authToken": "cfg"}})
+    assert a2.enabled and a2.authenticate({"authToken": "cfg"})
+    # from_config：环境变量回退
+    a3 = GatewayAuth.from_config({}, {"DSH_GATEWAY_TOKEN": "envtok"})
+    assert a3.enabled and a3.authenticate({"authToken": "envtok"})
+    # from_config：皆空 → 不启用
+    a4 = GatewayAuth.from_config({}, {})
+    assert not a4.enabled
+    print("  ✓ GatewayAuth 单元：启用/禁用/匹配/环境变量回退")
+
+
+async def test_gateway_auth_enforced():
+    ctx = _mock_ctx()
+    auth = GatewayAuth("topsecret")
+    assert auth.enabled and auth.authenticate({"authToken": "topsecret"})
+    assert not auth.authenticate({"authToken": "wrong"})
+    gateway = WebSocketGatewayServer(ctx, auth=auth)
+    port = _free_port()
+
+    import websockets
+
+    async def handler(ws: Any) -> None:
+        await gateway.handle_connection(ws)
+
+    server = await websockets.serve(handler, "127.0.0.1", port, max_size=1 << 20)
+    try:
+        uri = f"ws://127.0.0.1:{port}"
+        async with websockets.connect(uri) as ws:
+            # 1) 无令牌 initialize → -32099
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "1", "method": "initialize",
+                                      "params": {"cwd": PROJECT_ROOT, "provider": "deepseek-official"}}))
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert frame.get("error", {}).get("code") == -32099, frame
+            # 2) 未认证直接 prompt → -32099
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "2", "method": "session/prompt",
+                                      "params": {"sessionId": "auth-s1",
+                                                 "contentBlocks": [{"type": "text", "text": "hi"}]}}))
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert frame.get("error", {}).get("code") == -32099, frame
+            # 3) 错令牌 initialize → -32099
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "3", "method": "initialize",
+                                      "params": {"cwd": PROJECT_ROOT, "provider": "deepseek-official",
+                                                 "authToken": "nope"}}))
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert frame.get("error", {}).get("code") == -32099, frame
+            # 4) 正确令牌 initialize → 成功
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "4", "method": "initialize",
+                                      "params": {"cwd": PROJECT_ROOT, "provider": "deepseek-official",
+                                                 "authToken": "topsecret"}}))
+            frame = await _recv_response(ws, "4")
+            assert "serverInfo" in frame["result"], frame
+            # 5) 认证后 prompt 正常
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "5", "method": "session/prompt",
+                                      "params": {"sessionId": "auth-s2",
+                                                 "contentBlocks": [{"type": "text", "text": "你好"}]}}))
+            frame = await _recv_response(ws, "5")
+            assert "messageId" in frame["result"], frame
+            # shutdown
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": "6", "method": "shutdown", "params": {}}))
+            frame = await _recv_response(ws, "6")
+            assert frame["result"] == {}
+        for _ in range(50):
+            if gateway.connection_count() == 0:
+                break
+            await asyncio.sleep(0.05)
+        assert gateway.connection_count() == 0
+        print("  ✓ 鉴权端到端：无令牌/错令牌 -32099，正确令牌可通，未认证请求被拒")
+    finally:
+        server.close()
+        await server.wait_closed()
+        await gateway.close()
+        ctx.dispose()
+
+
 async def main():
     print("== test_gateway ==")
     await test_ws_transport_dispatch()
     await test_gateway_end_to_end()
     await test_gateway_unknown_method_and_two_connections()
+    await test_gateway_auth_unit()
+    await test_gateway_auth_enforced()
     print("OK: WebSocket 网关测试通过")
 
 

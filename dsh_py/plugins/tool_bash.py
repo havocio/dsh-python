@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from dsh_py.core.context import AppContext
+from dsh_py.services.shell_env import collect_for
 
 BASH_SCHEMA = {
     "type": "object",
@@ -57,6 +58,8 @@ def apply(ctx: AppContext, config: Any = None) -> None:
             return "错误：timeout_ms 必须是正整数", True
         workdir = args.get("workdir")
         run_background = bool(args.get("run_in_background"))
+        # 受信任 DSH_* 快照（shellEnv 未挂载时为 None，执行器保持继承环境）。
+        dsh_env = collect_for(ctx, exec)
 
         if run_background:
             if not enable_background:
@@ -66,7 +69,9 @@ def apply(ctx: AppContext, config: Any = None) -> None:
             from dsh_py.services.jobs_local import create_bash_job_hooks
 
             try:
-                hooks = create_bash_job_hooks(ctx, command, cwd=workdir, output_limit_bytes=background_output_limit)
+                hooks = create_bash_job_hooks(
+                    ctx, command, cwd=workdir, output_limit_bytes=background_output_limit, env=dsh_env
+                )
                 job_id = ctx.jobs.start({
                     "kind": "bash",
                     "label": command[:60],
@@ -79,7 +84,7 @@ def apply(ctx: AppContext, config: Any = None) -> None:
                 return f"错误：{exc}", True
 
         try:
-            result = await ctx.shell.execute(command, cwd=workdir, timeout_ms=timeout_ms)
+            result = await ctx.shell.execute(command, cwd=workdir, timeout_ms=timeout_ms, env=dsh_env)
             return _render(result), False
         except (ValueError, OSError) as exc:
             return f"错误：{exc}", True

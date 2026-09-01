@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from dsh_py.api.protocol import _parse_frame, JsonRpcResponseError
+from dsh_py.api.protocol import _parse_frame, JsonRpcError, JsonRpcResponseError
 from dsh_py.api.server import HarnessSdkJsonRpcServer
 
 logger = logging.getLogger("dsh_py.gateway")
@@ -137,6 +137,8 @@ class JsonRpcWebSocketTransport:
         try:
             result = await handler(method, params)
             await self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
+        except JsonRpcError as exc:  # 业务可控错误码（如鉴权 -32099）
+            await self._write_error(request_id, exc.code, str(exc), getattr(exc, "data", None))
         except Exception as exc:  # noqa: BLE001 - 与 dsh 一致：handler 失败 → -32603
             await self._write_error(request_id, -32603, str(exc))
 
@@ -154,8 +156,11 @@ class JsonRpcWebSocketTransport:
             return
         future.set_result(frame.get("result"))
 
-    async def _write_error(self, request_id: Any, code: int, message: str) -> None:
-        await self._write({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
+    async def _write_error(self, request_id: Any, code: int, message: str, data: Any = None) -> None:
+        error: dict = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        await self._write({"jsonrpc": "2.0", "id": request_id, "error": error})
 
     def _fail_pending(self, error: Exception) -> None:
         for future in self._pending.values():
@@ -172,11 +177,15 @@ class WebSocketGatewayServer:
     运行中的会话事件流）。连接断开自动退订并清理。
 
     :param ctx: 已装配的 :class:`AppContext`（含 agents / sessions / llm）。
-    :param handler: 可选的连接级请求包装（如鉴权）；缺省直连 server。
+    :param auth: 可选网关鉴权（``GatewayAuth``）；缺省 ``None`` 即开放模式，
+        任何连接无需令牌即可调用；启用后客户端须在 ``initialize`` 的 ``authToken``
+        字段携带令牌，未认证连接除 ``initialize`` 外一律回 ``-32099``。
     """
 
-    def __init__(self, ctx: Any) -> None:
+    def __init__(self, ctx: Any, auth: Optional[Any] = None) -> None:
         self.ctx = ctx
+        # 可选网关鉴权（GatewayAuth）；None = 开放模式（本地开发默认）。
+        self._auth = auth
         self._connections: dict[int, dict] = {}
         self._conn_serial = 0
 
@@ -184,11 +193,27 @@ class WebSocketGatewayServer:
         """处理一条连接：握手后进入读循环，直到断开或 shutdown。"""
         transport = JsonRpcWebSocketTransport(send=websocket.send)
         server = HarnessSdkJsonRpcServer(self.ctx, transport)
-        connection: dict = {"transport": transport, "server": server, "ws": websocket}
+        connection: dict = {"transport": transport, "server": server, "ws": websocket,
+                           "authed": self._auth is None}
         connection_id = self._conn_serial
         self._conn_serial += 1
         self._connections[connection_id] = connection
-        transport.on_request(server.handle_request)
+        if self._auth is not None:
+            auth = self._auth
+
+            async def _guarded_request(method: str, params: dict) -> Any:
+                if not connection["authed"]:
+                    if method == "initialize":
+                        if auth.authenticate(params):
+                            connection["authed"] = True
+                            return await server.handle_request(method, params)
+                        raise JsonRpcError(-32099, "authentication failed")
+                    raise JsonRpcError(-32099, "authentication required: send initialize with authToken first")
+                return await server.handle_request(method, params)
+
+            transport.on_request(_guarded_request)
+        else:
+            transport.on_request(server.handle_request)
         try:
             async for raw in websocket:
                 transport.on_message(raw)

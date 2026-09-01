@@ -115,6 +115,17 @@ def merge_env(base: dict, snapshot: Optional[dict]) -> dict:
     return merged
 
 
+def collect_for(ctx: AppContext, execution: Any) -> Optional[dict]:
+    """为一次工具执行收集受信任 ``DSH_*`` 快照；``shellEnv`` 未挂载时返回 ``None``。
+
+    shell 工具（``tool-bash`` / ``tool-bash-persistent`` / 后台 bash job）统一经此
+    入口注入，避免每个调用方重复写 ``has_service`` 守卫。
+    """
+    if not ctx.has_service("shellEnv"):
+        return None
+    return ctx.shellEnv.collect(execution)
+
+
 class ShellEnvRegistry(Service):
     """``ctx.shellEnv`` 注册表：受信任的、每次执行的 ``DSH_*`` 变量。
 

@@ -123,7 +123,9 @@ async def run_server(
         for route in list(dict.fromkeys([provider, "deepseek-official"])):
             ctx.llm.register_adapter([route], MockAdapter(), replace=True)
 
-    gateway = WebSocketGatewayServer(ctx)
+    # 网关鉴权：仅当 profile 启用了 gatewayAuth 服务才注入（默认开放）。
+    auth = getattr(ctx, "gatewayAuth", None)
+    gateway = WebSocketGatewayServer(ctx, auth=auth)
 
     import websockets
 

@@ -33,6 +33,24 @@ class JsonRpcResponseError(Exception):
         self.data = data
 
 
+class JsonRpcError(Exception):
+    """本端 handler 主动抛出的、携带标准 ``error.code`` 的 JSON-RPC 错误。
+
+    与 :class:`JsonRpcResponseError`（解析对端 error 帧）相对：本异常由本端
+    业务 handler 抛出，传输层据此写出**对应 code** 的 error 帧，而非默认落到
+    ``-32603``（handler 内部异常）。典型用途：网关鉴权失败回 ``-32099``。
+
+    :param code: JSON-RPC 错误码（实现自定义区间 ``-32000..-32099``）。
+    :param message: 人类可读诊断（不含敏感值）。
+    :param data: 可选附加数据（结构化）。
+    """
+
+    def __init__(self, code: int, message: str, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
 class JsonRpcProtocolError(Exception):
     """传输层失败：写入失败或通道关闭。"""
 

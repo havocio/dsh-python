@@ -74,6 +74,10 @@ class Session:
         self.events: list[SessionEvent] = list(seed_events or [])
         # seq 从已有事件续接（resume 场景）
         self._seq = max((e.seq for e in self.events), default=0)
+        # 首个「活」事件（种子之外）的 seq：构造期种子永不 publish 于火流，其 seq
+        # 全部 ≤ _seq；live 捕获以此游标区分「只投影不交接」与「捕获交接」。对齐 dsh 的
+        # Session.firstLiveSeq（构造期固定，不随后续 append 改变）。
+        self._first_live_seq = self._seq + 1
         # 可选持久化后端：append 时同步落盘（耐久性写）
         self._persistence = persistence
         # 表面（surface）：模型可见节点的 seq 列表 + 重写代数（compaction 替换后递增）
@@ -88,6 +92,15 @@ class Session:
     def seq(self) -> int:
         """当前已追加的事件数（最后一个事件的 seq；空日志为 0）。"""
         return self._seq
+
+    @property
+    def first_live_seq(self) -> int:
+        """首个「活」事件的 seq（种子边界 + 1）。
+
+        构造期种子（resume/派生）全部落在 ``[1, _seq]``，其 seq ≤ _seq；首个经
+        ``append`` 真正 publish 到火流的事件 seq 为 ``_seq + 1``。捕获协调器据此
+        区分「构造期种子（只投影不交接）」与「活事件（捕获交接）」。"""
+        return self._first_live_seq
 
     @property
     def surface(self) -> dict:
@@ -214,7 +227,21 @@ class SessionService(Service):
         本实现的 ``append`` 为同步落盘（原子提交），落盘即已耐久；此方法保留
         以对齐 dsh 的 ``sessions.flush`` 语义——缓存行必须**不早于**其覆盖的
         日志事件落地，崩溃可让缓存落后于日志（更长尾部重放），绝不超前（幽灵值）。
+
+        同步广播 ``session/flush``（载荷 ``session``）——持久化/遥测后端据此在 turn
+        结束时冲刷；OTel 后端刻意不实现 flush 提示，交由 SDK 自身批处理节奏。
         """
+        self.ctx.emit("session/flush", session)
+
+    def dispose(self, session: Session) -> None:
+        """从存储移除会话并广播 ``session/disposed``（载荷 ``session``）。
+
+        遥测 live 捕获据此在会话自身终止边缘捕获 shutdown 运维记录并退役。dsh_py 当前
+        无自动调用点（会话在进程内常驻），但保留该出口以满足「会话级清理」语义，且让
+        协调器的 per-session shutdown 标记在会话中途消亡时也能触发（而非仅 fiber 卸载）。
+        """
+        self._store.pop(session.header.id, None)
+        self.ctx.emit("session/disposed", session)
 
     # ------------------------------------------------------------------ #
     # 准备 / 进入 / 创建 / 恢复
@@ -232,8 +259,13 @@ class SessionService(Service):
                        persistence=self._persistence)
 
     def enter(self, session: Session) -> None:
-        """把已准备的会话登记进存储（对标 dsh 的 ``sessions.enter``）。"""
+        """把已准备的会话登记进存储（对标 dsh 的 ``sessions.enter``）。
+
+        登记后广播 ``session/created``（载荷 ``session``）——遥测 live 捕获据此采纳
+        新会话；热重载不会重放该事件，故协调器构造时还会清扫已存活会话。
+        """
         self._store[session.header.id] = session
+        self.ctx.emit("session/created", session)
 
     def create(self, cwd: Optional[str] = None, persist: bool = True) -> Session:
         """创建并返回一个全新会话（prepare + enter，经 SessionPreparation 屏障）。

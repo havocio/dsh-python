@@ -20,10 +20,12 @@ owner（调用方 agent）一个持久 shell，工作目录与环境变量跨调
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from typing import Any, Optional
 
 from dsh_py.core.context import AppContext
+from dsh_py.services.shell_env import collect_for, merge_env
 
 #: 单页滚动缓冲读取的轮询间隔（毫秒，转秒后使用）。
 _POLL_INTERVAL_S = 0.025
@@ -157,17 +159,20 @@ class _PersistentShells:
             self._locks[owner_id] = lock
         return lock
 
-    def _spawn(self, owner: Any) -> Any:
+    def _spawn(self, owner: Any, env: Optional[dict] = None) -> Any:
         cwd = None
         try:
             cwd = owner.session.header.cwd
         except Exception:  # noqa: BLE001 - owner 无会话时回退 None（进程 cwd）
             cwd = None
-        session = self.ctx.terminals.spawn(cwd=cwd)
+        session = self.ctx.terminals.spawn(cwd=cwd, env=env)
         return session
 
-    def get(self, owner: Any) -> Any:
+    def get(self, owner: Any, env: Optional[dict] = None) -> Any:
         """返回 owner 的持久 shell（不存在则新建）。
+
+        :param env: 合并后的完整环境（含受信任 ``DSH_*`` 快照）；仅在**新建**会话时
+            生效——持久 shell 的语义就是环境跨调用保留，不逐次重注入。
 
         注意：本方法不加锁——调用方（``_execute_command``）须持有对应 owner 的锁，
         以保证「检查-创建-执行」整体串行（``asyncio.Lock`` 不可重入）。
@@ -180,7 +185,7 @@ class _PersistentShells:
                     session.close()
                 except Exception:  # noqa: BLE001
                     pass
-            session = self._spawn(owner)
+            session = self._spawn(owner, env)
             self._live[owner_id] = session
         return session
 
@@ -213,7 +218,8 @@ async def _collect_until(session: Any, end_marker: str, timeout_s: float) -> tup
 
 
 async def _execute_command(
-    shells: _PersistentShells, owner: Any, command: str, config: dict, signal: Any
+    shells: _PersistentShells, owner: Any, command: str, config: dict, signal: Any,
+    env: Optional[dict] = None,
 ) -> str:
     """在 owner 的持久 shell 上执行一条命令并返回渲染后的文本。
 
@@ -221,14 +227,15 @@ async def _execute_command(
     """
     owner_id = shells._owner_id(owner)
     async with shells._lock_for(owner_id):
-        return await _execute_command_locked(shells, owner, command, config, signal)
+        return await _execute_command_locked(shells, owner, command, config, signal, env)
 
 
 async def _execute_command_locked(
-    shells: _PersistentShells, owner: Any, command: str, config: dict, signal: Any
+    shells: _PersistentShells, owner: Any, command: str, config: dict, signal: Any,
+    env: Optional[dict] = None,
 ) -> str:
     """持有 owner 锁后执行（见 ``_execute_command``）。"""
-    session = shells.get(owner)
+    session = shells.get(owner, env)
     marker = _markers()
     wrapped = _wrap_command(command, marker) + "\n"
     fallback = ""
@@ -301,9 +308,12 @@ def apply(ctx: AppContext, config: Any = None) -> None:
         if owner is None:
             return "错误：bash 需要一个持有会话的调用方 agent", True
         signal = exec.get("signal")
+        # 受信任 DSH_* 快照：合并进完整进程环境后注入（shellEnv 未挂载则 None，继承父进程）。
+        snapshot = collect_for(ctx, exec)
+        spawn_env = merge_env(dict(os.environ), snapshot) if snapshot is not None else None
         # 同一 owner 串行由 _execute_command 内部持锁保证（避免与 get 重入死锁）。
         try:
-            result = await _execute_command(shells, owner, command, resolved, signal)
+            result = await _execute_command(shells, owner, command, resolved, signal, spawn_env)
         except Exception as exc:  # noqa: BLE001
             return f"错误：{exc}", True
         # _execute_command 已在超时/退出时返回带重置说明的文本（视为正常结果）。

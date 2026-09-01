@@ -52,6 +52,15 @@ def _agent(ctx):
     return session, agent
 
 
+async def _invoke(ctx, name, agent, raw_input="", signal=None):
+    """按现行命令 API 执行（``execute(agent, line, signal)``），解包 ``.result``。"""
+    from dsh_py.core.signal import CancelSignal
+
+    line = f"/{name}" + (f" {raw_input}" if raw_input else "")
+    execution = await ctx.commands.execute(agent, line, signal or CancelSignal())
+    return execution.result if execution is not None else None
+
+
 def _mk_event(type_, data, seq=1):
     from types import SimpleNamespace
     return SimpleNamespace(type=type_, data=data, seq=seq)
@@ -146,16 +155,16 @@ async def test_plan_command_on_off_message():
     ctx = _ctx()
     session, agent = _agent(ctx)
 
-    r = await ctx.commands.invoke("plan", agent, raw_input="")
+    r = await _invoke(ctx, "plan", agent, "")
     assert r.kind == "success" and "Plan mode on" in r.text
     assert fold_plan_mode(session.events) is True
 
-    r = await ctx.commands.invoke("plan", agent, raw_input="off")
+    r = await _invoke(ctx, "plan", agent, "off")
     assert r.kind == "success" and "Plan mode off" in r.text
     assert fold_plan_mode(session.events) is False
 
     # 带消息：进入 plan mode 并注入 steer 消息（下回合收件箱）
-    r = await ctx.commands.invoke("plan", agent, raw_input="我们先用计划模式工作")
+    r = await _invoke(ctx, "plan", agent, "我们先用计划模式工作")
     assert r.kind == "success" and "Plan mode on" in r.text
     assert agent.inbox.has_pending is True
 

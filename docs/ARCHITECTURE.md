@@ -8,7 +8,7 @@
 ┌─ 第 4 层 应用层 ─────────────────────────────────────────────┐
 │  cli.py（交互/headless/--jsonrpc）  sdk.py（进程内）          │
 │  api/（跨进程 JSON-RPC over stdio）  gateway.py + websocket   │
-├─ 第 3 层 支撑服务（41 包，全部插件装配）────────────────────────┤
+├─ 第 3 层 支撑服务（45 包，全部插件装配）────────────────────────┤
 │  system-prompt · tools · settings · credentials · subagent · │
 │  mcp · compaction · fs/shell/terminal · guard · hooks ·      │
 │  schedule · todo · attachment · feedback · util · storage ·  │

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from dsh_py.core.context import AppContext
-from dsh_py.services.commands import CommandInvocation, CommandResult
+from dsh_py.services.commands import CommandDefinition, CommandInvocation, CommandResult
 from dsh_py.services.compaction import ManualCompactionError
 
 USAGE = "用法: /compact（无参数）"
@@ -61,7 +61,11 @@ def apply(ctx: AppContext, config: Any = None) -> None:
     def handler(invocation: CommandInvocation) -> Any:
         return _execute_compact(ctx, invocation)
 
-    ctx.commands.register("compact", "压缩较早的会话历史", handler)
+    ctx.commands.register(CommandDefinition(
+        name="compact",
+        description="压缩较早的会话历史",
+        handler=handler,
+    ))
 
 
 apply.provides = ["commandCompact"]

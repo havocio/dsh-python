@@ -210,6 +210,8 @@ class HarnessSdkJsonRpcServer:
             return await self._console_approval_decide(params)
         if method == "console/questions/answer":
             return await self._console_questions_answer(params)
+        if method == "pluginInventory/list":
+            return await self._plugin_inventory_list()
         raise RuntimeError(f"unknown DeepSeek Harness SDK runtime method: {method}")
 
     # ------------------------------------------------------------------ #
@@ -459,6 +461,22 @@ class HarnessSdkJsonRpcServer:
         answers = params.get("answers")
         delivered = self._bridge.answer_question(request_id, answers)
         return {"available": True, "delivered": delivered}
+
+    # ------------------------------------------------------------------ #
+    # host/plugin-inventory：Loader 装载树只读投影（数据面）
+    # ------------------------------------------------------------------ #
+    async def _plugin_inventory_list(self) -> dict:
+        """``pluginInventory/list``：返回当前 Loader 条目投影。
+
+        ``ctx.pluginInventory`` 未挂载（host 服务缺省）时返回 ``available: False``。
+        """
+        if not self.ctx.has_service("pluginInventory"):
+            return {"available": False, "entries": []}
+        try:
+            entries = self.ctx.pluginInventory.list()
+        except Exception as exc:  # noqa: BLE001 - 投影失败不影响其它请求
+            return {"available": True, "error": str(exc), "entries": []}
+        return {"available": True, "entries": entries}
 
     # ------------------------------------------------------------------ #
     # 会话管理

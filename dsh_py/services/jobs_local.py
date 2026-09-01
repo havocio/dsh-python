@@ -365,6 +365,7 @@ def create_bash_job_hooks(
     command: str,
     cwd: Optional[str] = None,
     output_limit_bytes: Optional[int] = None,
+    env: Optional[dict] = None,
 ) -> dict:
     """经 ``ctx.subprocess`` seam 生成一个 bash 后台任务的 hooks（**真实子进程**）。
 
@@ -373,8 +374,12 @@ def create_bash_job_hooks(
     取消为**树级**终止（POSIX 进程组 / Windows taskkill /T）；输出为有界收集
     （tail-keep），``readOutput`` 增量偏移读。终端状态：``completed``（退出码
     0）/ ``failed``（非零）/ ``killed``（信号终止）。
+
+    :param env: 受信任 ``DSH_*`` 快照（见 ``shell_env.collect_for``）。传入时先剥离
+        继承的 ``DSH_*`` 再合并，避免嵌套 harness / 并发父子 agent 泄漏陈旧身份。
     """
     from dsh_py.services.shell import ShellService
+    from dsh_py.services.shell_env import merge_env
     from dsh_py.services.subprocess import SubprocessCollect, SubprocessSpawnSpec, SubprocessStdio
 
     shell = ShellService._default_shell()
@@ -390,6 +395,7 @@ def create_bash_job_hooks(
             stderr=SubprocessCollect(maxBytes=cap),
         ),
         graceMs=2000,
+        env=merge_env(dict(os.environ), env) if env is not None else None,
     )
     handle = ctx.subprocess.spawn(spec)
     # 终止标志：Windows taskkill 强杀后退出码非零，无法靠退出码区分「被杀」与

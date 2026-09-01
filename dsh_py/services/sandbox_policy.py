@@ -13,9 +13,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from dsh_py.services.sandbox import ConfinedSandboxMode, SandboxExecutionPolicy, SandboxPolicy
+from dsh_py.core.context import AppContext
 
 #: 所有沙箱模式，用于选项广告与对不可信模式字符串的运行时校验。
 SANDBOX_MODES: tuple[str, ...] = ("read-only", "workspace-write", "danger-full-access")
+
+
+def owner_of(actor: Any) -> Any:
+    """从一次能力调用的 ``actor`` 推导「观测/策略归属」的会话身份。
+
+    对标 dsh 的 ``actor.agent.session``：``actor`` 通常是工具层透传的 Agent
+    （``exec['agent']``），其 ``.session`` 即归属会话；若 ``actor`` 自身就是 Agent
+    或 Session，也需正确收敛。返回 ``None`` 表示无归属（落到全局/默认策略）。
+    """
+    if actor is None:
+        return None
+    agent = getattr(actor, "agent", None)
+    if agent is None:
+        agent = actor
+    return getattr(agent, "session", None)
 
 
 def effectiveSandboxMode(events: list) -> str | None:
@@ -57,6 +73,23 @@ class SandboxPolicyResolver:
 
     def as_execution_policy(self, session: Any | None = None, mode_override: str | None = None) -> SandboxExecutionPolicy:
         return self.resolve(session, mode_override).as_execution_policy()
+
+
+def apply(ctx: AppContext, config: Any = None) -> None:
+    """插件入口：注册 ``sandboxPolicy`` 服务（会话级沙箱策略解析器）。
+
+    供 ``fs-sandbox`` 等强制执行家族在每次能力调用时解析 ``{mode, workspaceRoot,
+    sessionId}``；缺省策略由部署配置决定（默认 ``read-only``，fail-closed）。
+    """
+    config = config or {}
+    resolver = SandboxPolicyResolver(
+        default_mode=config.get("default_mode", "read-only"),
+        workspace_root=config.get("workspace_root", "."),
+    )
+    ctx.provide("sandboxPolicy", resolver)
+
+
+apply.provides = ["sandboxPolicy"]  # 声明：本插件提供 sandboxPolicy 服务（供 loader 拓扑排序）
 
 
 __all__ = [

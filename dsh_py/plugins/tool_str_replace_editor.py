@@ -15,6 +15,7 @@ import os
 from typing import Any, Optional
 
 from dsh_py.core.context import AppContext
+from dsh_py.services.fs import FsError
 
 TRUNCATED_MESSAGE = (
     "<response clipped><NOTE>为节省上下文仅展示部分文件内容。请先用 grep 搜索行号，"
@@ -158,7 +159,7 @@ def _list_directory(ctx: AppContext, absolute: str, max_output_chars: int) -> st
 
 
 def _view_path(ctx: AppContext, path: str, view_range: Optional[list],
-               max_output_chars: int) -> str:
+               max_output_chars: int, actor: Any = None) -> str:
     absolute = _resolve_target(ctx, path)
     info = _stat_existing(ctx, absolute, "view")
     if info["type"] == "directory":
@@ -167,19 +168,25 @@ def _view_path(ctx: AppContext, path: str, view_range: Optional[list],
         return _list_directory(ctx, absolute, max_output_chars)
     with open(absolute, "r", encoding="utf-8") as f:
         content = f.read()
-    ctx.emit("fs/observed", {"path": absolute, "present": True, "version": 1})
+    # 记录「存在」观测态（携带当前磁盘版本，使 gate 的观测版本与磁盘保持一致）
+    ctx.emit("fs/observed", {
+        "path": absolute,
+        "present": True,
+        "version": ctx.fs._versions.get(absolute),
+        "actor": actor,
+    })
     return _format_file_view(absolute, content, max_output_chars, view_range)
 
 
 # --------------------------------------------------------------------------- #
 # create
 # --------------------------------------------------------------------------- #
-def _create_file(ctx: AppContext, path: str, file_text: Optional[str]) -> str:
+def _create_file(ctx: AppContext, path: str, file_text: Optional[str], actor: Any = None) -> str:
     content = _required(file_text, "file_text", "create")
     absolute = _resolve_target(ctx, path)
     if ctx.fs.exists(absolute):
         raise ValueError(f"文件已存在于 {absolute}，不能用 `create` 命令覆盖")
-    ctx.fs.write_text(absolute, content)
+    ctx.fs.write_text(absolute, content, actor=actor)
     return f"新文件已成功创建于：{absolute}"
 
 
@@ -187,7 +194,7 @@ def _create_file(ctx: AppContext, path: str, file_text: Optional[str]) -> str:
 # str_replace
 # --------------------------------------------------------------------------- #
 def _replace_in_file(ctx: AppContext, path: str, old_str: Optional[str],
-                     new_str: Optional[str]) -> str:
+                     new_str: Optional[str], actor: Any = None) -> str:
     old_value = _required(old_str, "old_str", "str_replace", allow_empty=False)
     new_value = new_str or ""
     absolute = _resolve_target(ctx, path)
@@ -203,7 +210,7 @@ def _replace_in_file(ctx: AppContext, path: str, old_str: Optional[str],
             f"未执行替换：`old_str` 在行 [{', '.join(map(str, lines))}] 出现多次，请确保其唯一")
     offset = offsets[0]
     after = before[:offset] + new_value + before[offset + len(old_value):]
-    ctx.fs.write_text(absolute, after)
+    ctx.fs.write_text(absolute, after, actor=actor)
     return f"文件 {absolute} 已成功编辑。"
 
 
@@ -211,7 +218,7 @@ def _replace_in_file(ctx: AppContext, path: str, old_str: Optional[str],
 # insert
 # --------------------------------------------------------------------------- #
 def _insert_in_file(ctx: AppContext, path: str, insert_line: Optional[int],
-                    new_str: Optional[str]) -> str:
+                    new_str: Optional[str], actor: Any = None) -> str:
     if insert_line is None or not isinstance(insert_line, int):
         raise ValueError("命令 insert 需要参数 `insert_line`（整数）")
     value = _required(new_str, "new_str", "insert")
@@ -224,29 +231,30 @@ def _insert_in_file(ctx: AppContext, path: str, insert_line: Optional[int],
         raise ValueError(
             f"`insert_line` 参数无效：{insert_line}，应在文件行数范围 [0, {len(lines)}] 内")
     after = "\n".join([*lines[:insert_line], *value.split("\n"), *lines[insert_line:]])
-    ctx.fs.write_text(absolute, after)
+    ctx.fs.write_text(absolute, after, actor=actor)
     return f"文件 {absolute} 已成功编辑。"
 
 
 # --------------------------------------------------------------------------- #
 # 处理器
 # --------------------------------------------------------------------------- #
-async def _handler(args: dict, exec: dict, ctx: AppContext, max_output_chars: int) -> tuple[str, bool]:
+async def _handler(args: dict, exec: dict, ctx: AppContext, max_output_chars: int,
+                   actor: Any = None) -> tuple[str, bool]:
     command = args.get("command")
     path = args.get("path")
     try:
         if command == "view":
-            text = _view_path(ctx, path, args.get("view_range"), max_output_chars)
+            text = _view_path(ctx, path, args.get("view_range"), max_output_chars, actor=actor)
         elif command == "create":
-            text = _create_file(ctx, path, args.get("file_text"))
+            text = _create_file(ctx, path, args.get("file_text"), actor=actor)
         elif command == "str_replace":
-            text = _replace_in_file(ctx, path, args.get("old_str"), args.get("new_str"))
+            text = _replace_in_file(ctx, path, args.get("old_str"), args.get("new_str"), actor=actor)
         elif command == "insert":
-            text = _insert_in_file(ctx, path, args.get("insert_line"), args.get("new_str"))
+            text = _insert_in_file(ctx, path, args.get("insert_line"), args.get("new_str"), actor=actor)
         else:
             return f"错误：未知命令 `{command}`（应为 view/create/str_replace/insert）", True
         return text, False
-    except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError) as exc:
+    except (ValueError, FileNotFoundError, IsADirectoryError, PermissionError, OSError, FsError) as exc:
         return f"错误：{exc}", True
 
 
@@ -285,7 +293,7 @@ def apply(ctx: AppContext, config: Any = None) -> None:
     }
 
     async def handler(arguments: dict, exec: dict) -> tuple[str, bool]:
-        return await _handler(arguments, exec, ctx, max_output_chars)
+        return await _handler(arguments, exec, ctx, max_output_chars, actor=exec.get("agent"))
 
     ctx.tools.register(
         "str_replace_editor",

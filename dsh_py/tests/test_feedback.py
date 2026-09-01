@@ -36,6 +36,15 @@ def _ctx():
     return ctx
 
 
+async def _invoke(ctx, name, agent, raw_input="", signal=None):
+    """按现行命令 API 执行（``execute(agent, line, signal)``），解包 ``.result``。"""
+    from dsh_py.core.signal import CancelSignal
+
+    line = f"/{name}" + (f" {raw_input}" if raw_input else "")
+    execution = await ctx.commands.execute(agent, line, signal or CancelSignal())
+    return execution.result if execution is not None else None
+
+
 def _mf_ctx(tmp):
     """装配 message-feedback 所需的 storage 家族（json 后端 + domain 路由）。"""
     ctx = _ctx()
@@ -69,12 +78,12 @@ async def test_feedback_command_records_event():
     agent = _Agent(session)
 
     # 空输入 → 错误，不落事件
-    err = await ctx.commands.invoke("feedback", agent, raw_input="   ")
+    err = await _invoke(ctx, "feedback", agent, "   ")
     assert err.kind == "error" and "Feedback text is required" in err.text
     assert not any(e.type == "feedback/record" for e in session.events)
 
     # 有文本 → 成功，追加 log-only 事件 + 应答
-    ok = await ctx.commands.invoke("feedback", agent, raw_input=" 很好用，希望支持更多格式  ")
+    ok = await _invoke(ctx, "feedback", agent, " 很好用，希望支持更多格式  ")
     assert ok.kind == "success"
     assert f"Feedback recorded for session {session.header.id}" in ok.text
     assert "Anonymous user:" in ok.text

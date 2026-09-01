@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from dsh_py.core.context import AppContext
 from dsh_py.services.anonymous_user_id import get_or_create_anonymous_user_id
-from dsh_py.services.commands import CommandInvocation, CommandResult
+from dsh_py.services.commands import CommandDefinition, CommandInvocation, CommandResult
 
 USAGE = "Usage: /feedback <text>"
 
@@ -68,11 +68,11 @@ def _execute_feedback_command(invocation: CommandInvocation, ctx: AppContext) ->
 
 def apply(ctx: AppContext, config: Optional[dict] = None) -> None:
     """为每个装配的命令适配器注册全局 ``/feedback`` 命令。"""
-    ctx.commands.register(
-        "feedback",
-        "record feedback about this session",
-        lambda invocation: _execute_feedback_command(invocation, ctx),
-    )
+    ctx.commands.register(CommandDefinition(
+        name="feedback",
+        description="record feedback about this session",
+        handler=lambda invocation: _execute_feedback_command(invocation, ctx),
+    ))
 
 
 apply.name = "command-feedback"

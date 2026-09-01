@@ -44,6 +44,17 @@ class _RoundAdapter(L.LlmAdapter):
             yield L.StreamChunk(L.ChunkType.FINISH, finish={"kind": "stop"})
 
 
+async def _invoke(ctx, name, agent=None, raw_input="", signal=None):
+    """按现行 API 执行一条命令（``execute(agent, line, signal)``）。
+
+    现行语义：语法/名字未命中时 ``execute`` 返回 ``None``（不写任何日志），
+    故此处解包 ``.result`` 并原样透传 ``None`` 供调用方断言。
+    """
+    line = f"/{name}" + (f" {raw_input}" if raw_input else "")
+    execution = await ctx.commands.execute(agent, line, signal or CancelSignal())
+    return execution.result if execution is not None else None
+
+
 def _ctx() -> AppContext:
     ctx = AppContext()
     CM.apply(ctx)
@@ -76,28 +87,36 @@ def _populated_agent(ctx: AppContext):
 def test_commands_registry() -> None:
     ctx = AppContext()
     CM.apply(ctx)
-    assert ctx.commands.list() == []
+    S.apply(ctx)  # execute 需真实会话（写 command/run + command/done）
+    assert ctx.commands.list(None) == []
 
     async def handler(invocation):
         return CM.CommandResult(kind="success", text=f"echo:{invocation.rawInput}")
 
-    ctx.commands.register("echo", "回显", handler)
-    assert ctx.commands.has("echo")
-    assert ctx.commands.list()[0]["name"] == "echo"
+    ctx.commands.register(CM.CommandDefinition(name="echo", description="回显", handler=handler))
+    assert ctx.commands.find(None, "echo") is not None
+    assert ctx.commands.list(None)[0].name == "echo"
 
     async def main() -> None:
-        result = await ctx.commands.invoke("echo", agent=None, raw_input="hi")
-        assert result.kind == "success" and result.text == "echo:hi"
-        # 未知命令
-        result = await ctx.commands.invoke("nope", agent=None)
-        assert result.kind == "error"
-        # handler 抛错 → 错误文本回流（不抛）
+        # execute 把生命周期事件写进 agent.session，故宿主需持有真实会话。
+        host = type("H", (), {"session": ctx.sessions.create()})()
+        result = await _invoke(ctx, "echo", host, "hi")
+        # parseCommand 不做尾部输入归一化：rawInput 保留命令名后的分隔空格
+        assert result.kind == "success" and result.text == "echo: hi"
+        # 未知命令：execute 返回 None（不写任何日志）
+        result = await _invoke(ctx, "nope", host)
+        assert result is None, "未命中命令应返回 None"
+        # handler 未捕获的异常向上传播（命令自身负责把预期失败映射为 error result）
         def bad(invocation):
             raise RuntimeError("boom")
 
-        ctx.commands.register("bad", "坏命令", bad)
-        result = await ctx.commands.invoke("bad", agent=None)
-        assert result.kind == "error" and "boom" in result.text
+        ctx.commands.register(CM.CommandDefinition(name="bad", description="坏命令", handler=bad))
+        try:
+            await _invoke(ctx, "bad", host)
+        except RuntimeError as exc:
+            assert "boom" in str(exc), exc
+        else:
+            raise AssertionError("handler 异常应传播给调用方")
 
     asyncio.run(main())
 
@@ -109,7 +128,7 @@ def test_compact_command_success() -> None:
     async def main() -> None:
         ctx = _ctx()
         agent = _populated_agent(ctx)
-        result = await ctx.commands.invoke("compact", agent, signal=CancelSignal())
+        result = await _invoke(ctx, "compact", agent, signal=CancelSignal())
         assert result.kind == "success"
         assert "已压缩" in result.text and "tokens" in result.text
         assert result.sourceEventSeq is not None
@@ -129,11 +148,11 @@ def test_compact_command_edge_cases() -> None:
         ctx = _ctx()
         # 空会话 → 无可用历史
         agent = ctx.agents.create_agent(ctx.sessions.create(), A.AgentOptions(provider="mock", model="m"))
-        result = await ctx.commands.invoke("compact", agent, signal=CancelSignal())
+        result = await _invoke(ctx, "compact", agent, signal=CancelSignal())
         assert result.kind == "success" and "尚无" in result.text
         # 带参数 → 用法错误
         agent2 = _populated_agent(ctx)
-        result = await ctx.commands.invoke("compact", agent2, signal=CancelSignal(), raw_input="extra args")
+        result = await _invoke(ctx, "compact", agent2, "extra args", CancelSignal())
         assert result.kind == "error" and "用法" in result.text
 
     asyncio.run(main())
@@ -172,15 +191,20 @@ def test_compact_command_failure_mapping() -> None:
 
         for code in ("busy", "cancelled", "changed", "summary", "commit", "persistence"):
             ctx.provide("compaction", FakeEngine(ctx, code))
-            result = await ctx.commands.invoke("compact", agent, signal=CancelSignal())
+            result = await _invoke(ctx, "compact", agent, signal=CancelSignal())
             assert result.kind == "error", f"{code} 应映射为错误"
             assert result.text, f"{code} 应有文案"
             # 取消优先级：signal 已中止 → cancelled 文案
         ctx.provide("compaction", FakeEngine(ctx, "busy"))
         cancelled = CancelSignal()
         cancelled.abort("cancelled-by-user")
-        result = await ctx.commands.invoke("compact", agent, signal=cancelled)
-        assert result.kind == "error" and "取消" in result.text
+        # 取消优先级：signal 已中止 → execute 抛出中止错误（不再结算为 error result）
+        try:
+            await _invoke(ctx, "compact", agent, signal=cancelled)
+        except RuntimeError as exc:
+            assert "cancelled" in str(exc), exc
+        else:
+            raise AssertionError("已中止的 signal 应让命令执行抛出")
 
     asyncio.run(main())
 
