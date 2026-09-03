@@ -29,8 +29,8 @@ _SHELL_GRACE_MS = 1000
 class ShellService(Service):
     """``shell`` 服务：本地命令执行（``ctx.shell``）。"""
 
-    def __init__(self, ctx: AppContext, shell: Optional[str] = None) -> None:
-        super().__init__(ctx, "shell")
+    def __init__(self, ctx: AppContext, shell: Optional[str] = None, name: str = "shell") -> None:
+        super().__init__(ctx, name)
         self._shell = shell or self._default_shell()
 
     @staticmethod
@@ -76,12 +76,20 @@ class ShellService(Service):
             return await self._execute_via_subprocess(command, cwd, timeout_ms, effective_env)
         return await self._execute_direct(command, cwd, timeout_ms, effective_env)
 
-    async def _execute_via_subprocess(self, command: str, cwd: Optional[str], timeout_ms: Optional[int], env: Optional[dict]) -> dict:
-        """seam 路径：``ctx.subprocess.spawn`` + 收集输出 + 超时 ``terminate()``。"""
+    async def _run_argv(
+        self,
+        command: str,
+        argv: tuple,
+        cwd: Optional[str],
+        timeout_ms: Optional[int],
+        env: Optional[dict],
+    ) -> dict:
+        """seam 路径：``ctx.subprocess.spawn`` + 收集输出 + 超时 ``terminate()``。
+
+        从具体的 ``argv`` 运行（子类封堵路径传入 ``ctx.sandbox.confine`` 返回的 argv）。
+        """
         from dsh_py.services.subprocess import SubprocessCollect, SubprocessSpawnSpec, SubprocessStdio
 
-        base = os.path.basename(self._shell).lower()
-        argv = (self._shell, "/c", command) if base in ("cmd", "cmd.exe") else (self._shell, "-c", command)
         spec = SubprocessSpawnSpec(
             argv=argv,
             cwd=cwd or os.getcwd(),
@@ -119,6 +127,12 @@ class ShellService(Service):
             "exit_code": exit_code,
             "timed_out": timed_out,
         }
+
+    async def _execute_via_subprocess(self, command: str, cwd: Optional[str], timeout_ms: Optional[int], env: Optional[dict]) -> dict:
+        """seam 路径（本地 argv）：转交 :meth:`_run_argv`。"""
+        base = os.path.basename(self._shell).lower()
+        argv = (self._shell, "/c", command) if base in ("cmd", "cmd.exe") else (self._shell, "-c", command)
+        return await self._run_argv(command, argv, cwd, timeout_ms, env)
 
     async def _execute_direct(self, command: str, cwd: Optional[str], timeout_ms: Optional[int], env: Optional[dict]) -> dict:
         """回退路径：直接 ``create_subprocess_shell``（seam 未挂载时；保持既有行为）。"""

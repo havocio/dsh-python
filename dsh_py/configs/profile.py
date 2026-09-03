@@ -52,6 +52,12 @@ from dsh_py.plugins.long_term_memory import apply as apply_memory
 # from dsh_py.services.shell_env import apply as apply_shell_env               # ctx.shellEnv（DSH_* 快照）
 # from dsh_py.plugins.tool_bash import apply as apply_tool_bash                # 模型侧 bash 工具（二选一）
 # from dsh_py.plugins.tool_bash_persistent import apply as apply_tool_bash_persistent  # 持久版（二选一，需 POSIX shell）
+# ── shell 家族 PowerShell 变体（与上面 bash 对称；需 subprocess seam）──
+# from dsh_py.services.pwsh_local import apply as apply_pwsh_local             # ctx.pwsh（一次性 PowerShell 执行后端）
+# from dsh_py.services.pwsh_sandbox import apply as apply_pwsh_sandbox        # ctx.pwshSandbox（沙箱化 PowerShell 执行体，需 sandbox+sandboxPolicy）
+# from dsh_py.plugins.tool_powershell import apply as apply_tool_powershell    # 模型侧 pwsh 工具（二选一，需 ctx.pwsh）
+# ── shell 家族 bash 沙箱变体（与 pwsh-sandbox 对称；需 subprocess+sandbox+sandboxPolicy）──
+# from dsh_py.services.bash_sandbox import apply as apply_bash_sandbox        # ctx.shellSandbox（沙箱化 bash 执行体，需同时挂载 sandbox+sandboxPolicy+tool-bash）
 # ── 文件系统家族（B/C 类：fs-sandbox 替代本地 fs + 观测策略 + 工具）──
 from dsh_py.services.sandbox_policy import apply as apply_sandbox_policy
 from dsh_py.services.fs_sandbox import apply as apply_fs_sandbox
@@ -121,6 +127,12 @@ PROFILE = [
     # apply_shell_env,          # 挂载后 bash 工具自动注入 DSH_HOME/DSH_SHELL/DSH_SESSION_ID(+JSONL)
     # apply_tool_bash,          # 一次性 bash（每条命令新进程）
     # # apply_terminal, apply_tool_bash_persistent,   # 持久 bash（cwd/env 跨调用保留；需 POSIX shell）
+    # ── shell 家族 PowerShell 变体（与上面 import 配套，取消注释启用；需 subprocess seam）──
+    # apply_pwsh_local,         # ctx.pwsh（一次性 PowerShell 执行后端）
+    # apply_tool_powershell,    # 模型侧 pwsh 工具（二选一，需 ctx.pwsh；封堵装配下自动走 pwshSandbox）
+    # # apply_pwsh_sandbox,     # ctx.pwshSandbox（沙箱化 PowerShell 执行体，需同时挂载 sandbox+sandboxPolicy+tool-powershell）
+    # ── shell 家族 bash 沙箱变体（与 pwsh-sandbox 对称）──
+    # # apply_bash_sandbox,    # ctx.shellSandbox（沙箱化 bash 执行体，需同时挂载 sandbox+sandboxPolicy+tool-bash）
     # ── web 前端演示（--webui）── 取消注释即点亮全部面板 ──
     # 命令面板 + 目标 + 技能 + 工作区 + 后台任务（缺省仅对话可用，面板显示装配引导）
     # apply_commands,                     # 命令面板（console/commands/*）

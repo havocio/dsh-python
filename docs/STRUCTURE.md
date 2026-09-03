@@ -96,5 +96,5 @@ dsh_py/
 ├─ configs/
 │   profile.py                   唯一装配点（用户层）
 │   dsh_config.py                唯一配置编辑点（key/参数/路径）
-└─ tests/                        79 个测试模块（纯 assert 脚本，无需 pytest）
+└─ tests/                        89 个测试模块（纯 assert 脚本，无需 pytest）
 ```
